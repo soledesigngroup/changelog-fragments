@@ -1,0 +1,15 @@
+{
+  "name": "changelog-fragments",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Collision-free, agent-friendly changelog: one fragment file per session, folded and condensed by two dependency-free scripts.",
+  "bin": {
+    "changelog-fragments-install": "./install.mjs"
+  },
+  "scripts": {
+    "install-into": "node install.mjs",
+    "test": "node test/smoke.mjs"
+  },
+  "license": "MIT"
+}
