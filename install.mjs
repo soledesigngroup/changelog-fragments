@@ -32,8 +32,11 @@ function parseArgs(argv) {
     const a = argv[i]
     if (a === "--dry-run") args.dryRun = true
     else if (a === "--no-commands") args.noCommands = true
-    else if (a === "--name") args.name = argv[++i]
-    else if (a === "-h" || a === "--help") args.help = true
+    else if (a === "--name") {
+      const v = argv[++i]
+      if (v === undefined || v.startsWith("--")) die("--name needs a value")
+      args.name = v
+    } else if (a === "-h" || a === "--help") args.help = true
     else if (a.startsWith("--")) die(`unknown argument ${a}`)
     else if (args.target === null) args.target = a
     else die(`unexpected argument ${a}`)
@@ -80,12 +83,22 @@ if (!existsSync(join(target, ".git"))) {
 
 const pkgPath = join(target, "package.json")
 const hasPkg = existsSync(pkgPath)
-const pkg = hasPkg ? JSON.parse(readFileSync(pkgPath, "utf8")) : null
+const pkgRaw = hasPkg ? readFileSync(pkgPath, "utf8") : null
+const pkg = hasPkg ? JSON.parse(pkgRaw) : null
+
+/**
+ * Whatever the target already indents package.json with — reserialize with the
+ * same thing, so adding one script isn't a whole-file reformat in their diff.
+ */
+const pkgIndent = pkgRaw?.match(/^\{[\r\n]+([ \t]+)/)?.[1] ?? 2
 
 const FOLD_CMD = hasPkg ? "npm run changelog:fold" : "node scripts/collect-changelog.mjs"
 const FOLD_CMD_DRY = hasPkg
   ? "npm run changelog:fold -- --dry-run"
   : "node scripts/collect-changelog.mjs --dry-run"
+const FOLD_CMD_CHECK = hasPkg
+  ? "npm run changelog:fold -- --check"
+  : "node scripts/collect-changelog.mjs --check"
 
 const projectName = args.name || titleize(pkg?.name || basename(target))
 
@@ -93,6 +106,7 @@ const SUBS = {
   "{{FOLD_CMD}}": FOLD_CMD,
   "{{FOLD_CMD_DRY}}": FOLD_CMD_DRY,
   "{{FOLD_CMD_DRY_INLINE}}": "`" + FOLD_CMD_DRY + "`",
+  "{{FOLD_CMD_CHECK}}": FOLD_CMD_CHECK,
   "{{PROJECT_NAME}}": projectName,
 }
 
@@ -184,7 +198,7 @@ if (hasPkg) {
   pkg.scripts ??= {}
   if (pkg.scripts["changelog:fold"] !== "node scripts/collect-changelog.mjs") {
     pkg.scripts["changelog:fold"] = "node scripts/collect-changelog.mjs"
-    if (!args.dryRun) writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n")
+    if (!args.dryRun) writeFileSync(pkgPath, JSON.stringify(pkg, null, pkgIndent) + "\n")
     record("updated", "package.json", 'added "changelog:fold" script')
   } else {
     record("unchanged", "package.json")

@@ -73,9 +73,15 @@ every `CLAUDE.md` is laid out differently.
 npm run changelog:fold -- --dry-run
 npm run changelog:fold
 
+# any time, writes nothing — pending fragments foldable? changelog structure intact?
+npm run changelog:fold -- --check
+
 # periodically — folds first, then ages older entries down the tiers
 /changelog-condense
 ```
+
+Only one fold can run at a time: it takes an exclusive lock and a second invocation exits rather than
+racing, so "run it when the tree is quiet" is enforced rather than merely advised.
 
 ## Adopting a repo that already has a changelog
 
@@ -98,14 +104,28 @@ installer never re-migrates a file that's already in the expected layout.
 fold a pure *move*: a folded entry reads exactly as authored, and `git log -S "<bullet text>"` still
 finds the feature commit that introduced it rather than the mechanical fold commit.
 
+**The fold never silently drops an entry.** A fragment containing anything the fold can't place — a
+heading outside the six canonical categories, text above the first `### Category` — is reported and
+**left on disk** rather than partly folded and deleted. Days are inserted in date order, so a fragment
+folded late (a session that crossed midnight, a branch merged after a fold) still lands below newer
+entries instead of on top of them.
+
 **The condense helper does the mechanics, the model does the judgment.** The model writes the summary
-prose to temp files; the script performs the splice and runs eight structural checks (anchors
+prose to temp files; the script performs the splice and runs nine structural checks (anchors
 unambiguous and ordered, no duplicate headings, nothing collapsed without being archived, the 0–3 day
 window untouched, no per-day heading covered by a week-range, separator and footer preserved, Tier-4
-drops only fully-archived week-ranges). **It writes nothing unless every check passes.**
+drops only fully-archived week-ranges, and a year shed that conserves every heading and line).
+**It writes nothing unless every check passes.**
+
+**The model isn't asked to do date arithmetic.** `--plan --today <DATE>` classifies every heading into
+its tier and prints the exact anchors and cutoffs to pass — including whether the archive is due to
+shed a year. Working "today minus 42 days" out by hand was the least reliable input to the most
+destructive operation.
 
 **Dates are compared as ISO strings.** `YYYY-MM-DD` sorts lexicographically, so there is no timezone
-handling anywhere and no way for a local-midnight bug to move an entry to the wrong day.
+handling anywhere and no way for a local-midnight bug to move an entry to the wrong day. The single
+exception is `--plan`'s cutoff arithmetic, which is UTC-only and works from the `--today` you pass
+rather than the clock.
 
 ## Updating an installed repo
 
@@ -120,8 +140,12 @@ npm test
 ```
 
 Installs into throwaway repos and exercises the real scripts: messy-changelog migration, the
-losslessness guarantee, fold ordering and same-date merging, byte-verbatim bullets, malformed
-fragment names, the condense checks, the no-`package.json` fallback, and install idempotency.
+losslessness guarantee, fold ordering and same-date merging, byte-verbatim bullets, malformed and
+unplaceable fragments, fold locking, a repo path containing a space, `--check`, `--plan`, the archive
+year shed, a failing-path test for every condense check, the no-`package.json` fallback, and install
+idempotency.
+
+`npm test -- <substring>` runs only the matching groups; each group builds its own temp repos.
 
 ## What's intentionally not here
 

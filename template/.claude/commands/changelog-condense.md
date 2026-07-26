@@ -53,26 +53,38 @@ entry. Do the judgment work (writing the summaries), then let `scripts/condense-
 mechanical splice and the verification. **The script writes nothing unless every check passes**, so
 prefer it over editing the files by hand.
 
-1. **Read the current `docs/changelog.md`** and, from today's date, work out which `## YYYY-MM-DD`
-   day-headings fall in each tier.
-2. **Write the new "Earlier Changes (Summary)" section** to a temp file (e.g. `/tmp/cl-mid.md`). It
-   must begin with the `## Earlier Changes (Summary)` heading and contain, in order: the new Tier-2
-   per-day entries (newest first), then any new Tier-3 week-range entries — stopping just before the
-   first existing heading that stays unchanged this run.
+1. **Ask the script what this run should do.** Don't work the tier boundaries out by hand — that's
+   date arithmetic guarding a destructive splice. `--plan` writes nothing and prints the tier
+   classification, the exact anchors, and a ready-to-paste command:
+   ```bash
+   node scripts/condense-changelog.mjs \
+     --changelog docs/changelog.md \
+     --archive docs/changelog-archive.md \
+     --plan --today $(date +%F)
+   ```
+   `--today` is required and never defaults to the clock. If `--plan` reports nothing has aged out,
+   stop — there's no work to do. Otherwise it tells you which temp files to write and what goes in
+   them; the steps below explain the shape of that content.
+2. **Write the new "Earlier Changes (Summary)" section** to the temp file `--plan` named (e.g.
+   `/tmp/cl-mid.md`). It replaces everything from `--cl-start` up to — not including — `--cl-end`, and
+   contains, newest first, exactly what `--plan` listed: the `## Earlier Changes (Summary)` heading
+   (whenever the region starts at a `## DATE` block), the new Tier-2 per-day entries, **any existing
+   entries the region swallows that this run doesn't change — copied verbatim**, then the new Tier-3
+   week-ranges.
    - **Check F requires the literal `---` + blank line immediately before that heading.** Every day
      block in `changelog.md` ends with a `---` separator, so the text preceding `--cl-start` normally
      supplies it. If it doesn't (e.g. `--cl-end` is the footer on an early run), start `cl-mid.md`
      with `---` + a blank line yourself.
 3. **If any dates collapse to Tier 3**, write their per-day summaries (newest first, each followed by
    a `---` line) to a second temp file (e.g. `/tmp/ar-new.md`) for the archive.
-   - On the **first** Tier-3 run the archive has no date headings yet; use the placeholder line at the
-     bottom of `changelog-archive.md` as the `--ar-before` anchor.
-4. **Run the helper** (add `--dry-run` first to preview):
+   - On the **first** Tier-3 run the archive has no date headings yet; `--plan` returns the placeholder
+     line at the bottom of `changelog-archive.md` as the `--ar-before` anchor.
+4. **Run the command `--plan` printed** (add `--dry-run` first to preview). Its shape:
    ```bash
    node scripts/condense-changelog.mjs \
      --changelog docs/changelog.md \
      --cl-start "<first ## date heading being condensed>" \
-     --cl-end   "<first existing heading to keep unchanged>" \
+     --cl-end   "<first heading below the last one that changes>" \
      --cl-mid   /tmp/cl-mid.md \
      --keep-detailed-since <today minus 3 days, YYYY-MM-DD> \
      --drop-ranges-before <today minus 42 days, YYYY-MM-DD> \
@@ -80,7 +92,7 @@ prefer it over editing the files by hand.
       --ar-before "<newest existing archive heading>" \
       --ar-content /tmp/ar-new.md]
    ```
-   Omit the three `--ar-*`/`--archive` flags on runs where nothing has reached Tier 3. **Pass
+   Omit the three `--ar-*` flags on runs where nothing has reached Tier 3. **Pass
    `--drop-ranges-before <today − 42 days>` on every run** to age old week-ranges out (Tier 4) — the
    script computes which trailing ranges to drop and no-ops if none qualify. It needs `--archive` for
    the coverage check (read-only; nothing is written there), so include `--archive docs/changelog-archive.md`
@@ -100,42 +112,32 @@ it holds more than a full year of detail, retire the **oldest complete calendar 
 static file. This keeps `changelog-archive.md` a rolling ~1-year window while `condense-changelog.mjs`
 keeps writing only to its top — **the split never touches the helper's target, anchors, or checks.**
 
-**After every condense run, check the guard:**
+`--plan` watches this for you and adds `--shed-year <YYYY>` to the command it prints when the archive
+exceeds **~2,000 lines** *and* holds a year older than its newest. Below that size it isn't worth
+splitting; if only one year is present there's nothing to shed until the calendar rolls over.
+
+The flag does the whole partition and verifies it (Check I) — **don't do this by hand:**
 
 ```bash
-wc -l docs/changelog-archive.md
+node scripts/condense-changelog.mjs \
+  --changelog docs/changelog.md \
+  --archive docs/changelog-archive.md \
+  --shed-year 2025 \
+  --drop-ranges-before <today minus 42 days>
 ```
 
-**Trigger — shed a year only when BOTH hold:**
-- the archive exceeds **~2,000 lines** (below that it isn't worth splitting), AND
-- it contains a calendar year *older than* the most recent year present — i.e. a complete past year
-  sits at the bottom (everything in the archive is already aged out by definition).
+It writes `docs/changelog-archive-2025.md` (a static file no tool touches again) with the year's block
+copied **verbatim**, removes that block from `changelog-archive.md`, and refreshes the
+`> Earlier years: [2025](changelog-archive-2025.md)` pointer near the top. Trailing note lines stay
+behind in `changelog-archive.md`. It refuses to run unless the year you named is the **oldest** one
+present (one year per run, oldest first), it isn't the only year, its target file doesn't already
+exist, and the partition conserves every heading and every non-blank line exactly once.
 
-If only the current year is present, the trigger does **not** fire; the file just grows until the
-calendar rolls over and last year becomes shed-able.
-
-**How to shed (a pure partition — no entry text is rewritten):**
-1. `KEEP` = the newest year in the archive (topmost `### YYYY-…` heading's year); `SHED` = the oldest
-   complete year present. Move **one year per run** (the oldest) so each run stays incremental — a
-   long-neglected archive sheds its tail one year at a time over successive condense runs.
-2. Boundary = the **topmost** `### <SHED>-…` heading. Everything from there to the end of the moved
-   year is the "old block"; week-range entries move with the year they belong to.
-3. **Create `docs/changelog-archive-<SHED>.md`**: a `# Changelog Archive — <SHED>` header, a blank
-   line, then the old block **verbatim** (still newest-at-top). This file is now static — no tool
-   writes it again.
-4. **Remove the old block** from `changelog-archive.md`, leaving the newer year(s) intact.
-5. **Add/refresh a pointer** near the top of `changelog-archive.md` so history stays discoverable,
-   e.g. `> Earlier years: [2026](changelog-archive-2026.md), [2025](changelog-archive-2025.md)`.
-
-**Verify before saving (this move has no helper — check by hand):**
-- `grep -c '^### ' docs/changelog-archive.md` **before** == that count on the new
-  `changelog-archive.md` **+** the count in the new year file. No `### YYYY-MM-DD` heading may be lost
-  or duplicated; `grep -l` the boundary date and the oldest date to confirm each resolves to exactly
-  one file.
-- The next `condense-changelog.mjs` run still passes `--archive docs/changelog-archive.md` and its
-  Check H coverage still passes — the dates it ages out are recent and never fall in a shed year.
+Coverage checks still see the shed year, so a `--shed-year` and a Tier-4 `--drop-ranges-before` in the
+same run can't make each other look unsafe.
 
 ## Rules
+- **Get the boundaries from `--plan --today $(date +%F)`, not from your own date arithmetic.**
 - **Never modify the 0–3 day window.** `--keep-detailed-since` (set to today − 3 days) enforces this.
 - **Tier 4 only drops week-ranges, never per-day detail.** `--drop-ranges-before` removes trailing
   `### X to Y` blocks whose end date < cutoff and refuses (Check H) if a dropped range isn't still
@@ -145,8 +147,8 @@ calendar rolls over and last year becomes shed-able.
 - A collapsed date appears as a week-range in `changelog.md` **and** a per-day entry in the archive —
   that cross-file pairing is correct, not a duplicate. Within a single file, no date may appear twice.
 - Keep `changelog-archive.md` in reverse-chronological order (newest at top).
-- **Shed completed years past ~2,000 lines** into `changelog-archive-<YEAR>.md` (see "Archive size
-  guard"). It's a pure partition — `condense-changelog.mjs` still only ever writes `changelog-archive.md`.
+- **Shed completed years past ~2,000 lines** with `--shed-year` (see "Archive size guard") — never by
+  hand. It's a pure partition; the only file `condense-changelog.mjs` keeps appending to is `changelog-archive.md`.
 - Keep this footer at the bottom of `changelog.md`:
   ```
   > Full per-day details available in [changelog-archive.md](changelog-archive.md)

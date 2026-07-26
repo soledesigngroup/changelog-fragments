@@ -7,4 +7,5 @@ entries land here.
 ---
 
 _Nothing archived yet — `/changelog-condense` inserts per-day entries above this line, newest first.
-Use this line as the `--ar-before` anchor on the first Tier-3 run._
+On the first Tier-3 run this line is the `--ar-before` anchor; `condense-changelog.mjs --plan` prints
+the exact value to pass._

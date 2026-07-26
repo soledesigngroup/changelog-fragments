@@ -33,7 +33,7 @@ The diff's full story already lives in git — the changelog is the **index**, n
    - `<slug>` is a short kebab-case topic (e.g. `session-cookie-rotation`).
    - `<token>` is a few random chars so two agents on the same topic can't collide. Generate it with `openssl rand -hex 2` (falls back to any 4 random hex chars).
    - Put **all** of this session's entries in this one file; add more `### Category` sections rather than a second file.
-3. Fill it with `### Category` sections (**Added**, **Changed**, **Fixed**, **Removed**, or **Security**) and `- **bold subject** — …` bullets.
+3. Fill it with `### Category` sections and `- **bold subject** — …` bullets. The category must be one of **Added**, **Changed**, **Deprecated**, **Fixed**, **Removed**, **Security** — the fold refuses a fragment with any other heading rather than guess where it belongs, so don't invent one (no `### Docs`, `### Performance`, `### Notes`).
 4. Keep each entry within the concision rules below.
 5. When committing, **stage only your fragment file** (explicit path — never `git add -A`). Do not touch `docs/changelog.md`.
 
@@ -54,7 +54,8 @@ Security entries may run slightly longer (up to ~3 sentences) because the change
 ## Format
 
 - The fragment has **no date header** (the date is in the filename).
-- `###` for category headers.
+- `###` for category headers, from the canonical list above — nothing else. Every line must sit under
+  one of them; text above the first `### Category` heading is an error, not a preamble.
 - Bullet points with a **bold subject** followed by the description.
 - Use a relative markdown link for the anchor file, written **relative to `docs/`** (its final home) — `` [`file.ts`](../src/…/file.ts) ``, `` [`x.md`](audits/x.md) `` — **not** relative to `changelog.d/`. The fold copies bullet text verbatim, so it must already read as it will in `changelog.md`.
 

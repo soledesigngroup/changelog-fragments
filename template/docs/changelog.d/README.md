@@ -26,8 +26,11 @@ docs/changelog.d/<YYYY-MM-DD>-<slug>-<token>.md
   (e.g. `openssl rand -hex 2` → `a3f9`).
 
 Contents are exactly what you'd write in the changelog, minus the date header:
-`### Category` sections (**Added / Changed / Fixed / Removed / Security**) with
-`- **Bold subject** — …` bullets, following all the usual concision rules.
+`### Category` sections (**Added / Changed / Deprecated / Fixed / Removed /
+Security**) with `- **Bold subject** — …` bullets, following all the usual
+concision rules. Those six headings are the only ones the fold accepts, and every
+line has to sit under one of them — it refuses the whole fragment (and leaves it
+here) rather than silently drop content it can't place.
 
 ```markdown
 ### Fixed
@@ -59,6 +62,22 @@ Run when the tree is quiet — this is the only step that writes `changelog.md`:
 Then commit `docs/changelog.md` together with the fragment deletions.
 `/changelog-condense` runs the fold first, so condensing always sees a complete
 file.
+
+Only one fold can run at a time — it takes an exclusive `.fold.lock` in this
+directory and a second one exits rather than racing. A lock left behind by a
+killed process is reclaimed automatically on the next run.
+
+## Checking without folding
+
+```bash
+{{FOLD_CMD_CHECK}}
+```
+
+Verifies that every pending fragment here is actually foldable and that
+`docs/changelog.md` still has the structure the tooling relies on — day headings in
+descending date order, no duplicated date, summary sentinel and archive footer
+intact. Writes nothing, exits non-zero on a problem, so it works as a pre-commit or
+CI gate. Pending fragments are normal and are not a failure.
 
 ## Why the fold is byte-preserving
 
