@@ -32,6 +32,13 @@
  * which tier plus the exact anchor/cutoff flags to use. Prefer it over working the
  * dates out by hand.
  *
+ * Other flags:
+ *   --dry-run   run every check and print the same report, then stop without writing
+ *   -h, --help  print this header
+ *
+ * Exit 0 = wrote (or would have written). Exit 1 = verification failed, nothing
+ * written. Exit 2 = bad arguments.
+ *
  * Example (Tier 2/3 + Tier 4 in one run):
  *   node scripts/condense-changelog.mjs \
  *       --changelog docs/changelog.md \

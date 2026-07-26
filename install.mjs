@@ -84,7 +84,16 @@ if (!existsSync(join(target, ".git"))) {
 const pkgPath = join(target, "package.json")
 const hasPkg = existsSync(pkgPath)
 const pkgRaw = hasPkg ? readFileSync(pkgPath, "utf8") : null
-const pkg = hasPkg ? JSON.parse(pkgRaw) : null
+let pkg = null
+if (hasPkg) {
+  try {
+    pkg = JSON.parse(pkgRaw)
+  } catch (err) {
+    // A stray comment or trailing comma in someone else's package.json shouldn't
+    // surface as a raw stack trace from a tool they just pointed at their repo.
+    die(`${pkgPath} is not valid JSON — ${err.message}`)
+  }
+}
 
 /**
  * Whatever the target already indents package.json with — reserialize with the

@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    # The suite installs into throwaway repos and shells out to the real scripts,
+    # so this is a genuine end-to-end run of the payload on each supported Node.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: ["18", "20", "22", "24"]
+        include:
+          # One macOS run guards the platform the tooling is developed on.
+          - os: macos-latest
+            node: "24"
+    name: node ${{ matrix.node }} / ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No install step on purpose — the payload has zero dependencies, and a
+      # `npm ci` here would quietly stop that from being true.
+      - run: npm test

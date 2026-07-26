@@ -1,4 +1,13 @@
-# changelog-fragments
+<h1 align="center">
+  <img src="assets/changelog-fragments-logo-2.jpg" alt="changelog-fragments" width="720">
+</h1>
+
+<p align="center">
+  <a href="https://github.com/soledesigngroup/changelog-fragments/actions/workflows/test.yml"><img src="https://github.com/soledesigngroup/changelog-fragments/actions/workflows/test.yml/badge.svg" alt="test"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/node-%E2%89%A5%2018-brightgreen" alt="node >= 18"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="dependencies: 0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="license: MIT"></a>
+</p>
 
 A collision-free changelog workflow for repos where **several coding agents work at once**, plus the
 tooling to keep the changelog from growing without bound.
@@ -28,25 +37,58 @@ A second step, **condense**, ages entries down through four tiers (full detail �
 week-range → archive-only) so `changelog.md` stays a fixed rolling window instead of an ever-growing
 file that every session pays to read.
 
+## What it looks like
+
+An agent finishing a session writes `docs/changelog.d/2026-07-26-webhook-signature-a3f9.md` — no date
+header, the fold reads the date off the filename:
+
+```markdown
+### Security
+- **Webhook accepted unsigned events** — an absent signature header short-circuited
+  verification. The secret is now constant-time-compared. [`route.ts`](../src/app/api/webhook/route.ts).
+```
+
+The fold moves those bullet lines into `docs/changelog.md` **byte-for-byte**, merging same-day
+fragments under one heading in canonical category order, and deletes the fragments:
+
+```markdown
+## 2026-07-26
+
+### Fixed
+- **Wide dialogs clamped to 640px** — a `sm:`-prefixed base width beat callers' overrides.
+
+### Security
+- **Webhook accepted unsigned events** — an absent signature header short-circuited
+  verification. The secret is now constant-time-compared. [`route.ts`](../src/app/api/webhook/route.ts).
+
+---
+```
+
 ## Install
 
 ```bash
-gh repo clone soledesigngroup/changelog-fragments
+npx degit soledesigngroup/changelog-fragments changelog-fragments
 node changelog-fragments/install.mjs /path/to/your-repo
 ```
 
-Already have it cloned? `git pull` first — `install.mjs` is idempotent, so re-running it against a repo
-just updates the scripts and commands in place.
+Or clone it, if you'd rather keep the history around to pull updates from:
 
-> This repo is private, so the usual `npx degit soledesigngroup/changelog-fragments` one-liner won't
-> resolve. Make it public if you want that to work.
+```bash
+git clone https://github.com/soledesigngroup/changelog-fragments.git
+node changelog-fragments/install.mjs /path/to/your-repo
+```
+
+`install.mjs` is idempotent, so re-running it against a repo just updates the scripts and commands in
+place — `git pull` first if you cloned.
 
 Flags: `--dry-run` (report only), `--name "Project Name"` (used in the seeded header),
 `--no-commands` (leave `.claude/commands/` alone).
 
-Requires Node 18+. Nothing is installed into the target repo — the two scripts are plain `.mjs` with
-only node builtins, so they run in a TypeScript repo, a Python repo, or a repo with no `package.json`
-at all.
+**Requirements:** Node 18+. Nothing is installed into the target repo — the two scripts are plain
+`.mjs` on node builtins only, so they run in a TypeScript repo, a Python repo, or a repo with no
+`package.json` at all. Developed and CI-tested on macOS and Linux; the scripts themselves are
+platform-agnostic, but the documented workflows assume a POSIX shell (`$(date +%F)`, `/tmp`,
+`openssl rand`), so on Windows use WSL or Git Bash.
 
 ## What lands in the target repo
 
@@ -152,3 +194,17 @@ idempotency.
 The system this was extracted from also synced folded bullets into a Postgres table with commit
 attribution, to power an in-app "What's New" page. That half is application-specific and stays out —
 the byte-verbatim fold is what makes it reconstructable later via `git log -S` if a repo ever wants it.
+
+## Contributing
+
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The short version: everything under
+`template/` ships verbatim into other people's repos, and [CLAUDE.md](CLAUDE.md) lists the invariants
+that are load-bearing, so read that before changing behavior.
+
+Releases are tagged and noted in [CHANGELOG.md](CHANGELOG.md); each entry says whether re-running
+`install.mjs` over an existing installation is safe. Pin a version with
+`npx degit soledesigngroup/changelog-fragments#v1.0.0`.
+
+## License
+
+[MIT](LICENSE) © Sole Design Group
