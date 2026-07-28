@@ -281,6 +281,19 @@ export function auditChangelog(changelogMd) {
     if (at.length > 1) problems.push(`duplicate day heading '## ${date}' (lines ${at.join(", ")})`)
   }
 
+  // The zone's top boundary is the FIRST `---` in the file. A `##` heading above
+  // it means the boundary sits below entries that belong inside the zone, so every
+  // fold lands mid-file instead of on top — silently, which is how a migration
+  // that put the header rule at the bottom went unnoticed.
+  for (let i = 0; i < start - 1; i++) {
+    if (!DAY_HEADING_RE.test(lines[i])) continue
+    problems.push(
+      `'${lines[i].trim()}' (line ${i + 1}) sits above the '---' that opens the Tier-1 zone ` +
+        `(line ${start}) — move that rule above the first '##' heading`
+    )
+    break
+  }
+
   if (!changelogMd.includes("---\n\n## Earlier Changes (Summary)"))
     problems.push("missing '---' separator immediately before '## Earlier Changes (Summary)'")
   if (!changelogMd.includes("> Full per-day details available in"))

@@ -80,16 +80,31 @@ the whole system exists to remove.
 and symlink-resolved, so any repo path with a space in it (`~/My Drive/...`) or behind a symlink
 (`/tmp`, `/var`, container mounts) made the fold exit 0 having done nothing, with no output at all.
 
-**Payload scripts resolve their own paths.** `collect-changelog.mjs` derives the repo root from its own
-location (`<script dir>/..`), not `process.cwd()`, so a git hook or a subdirectory invocation behaves
-identically. A missing `docs/changelog.d/` is an error, not a silent success.
+**Payload scripts resolve their own paths.** Both derive the repo root from their own location
+(`<script dir>/..`), never `process.cwd()`, so a git hook or a subdirectory invocation behaves
+identically. `collect-changelog.mjs` treats a missing `docs/changelog.d/` as an error, not a silent
+success; `condense-changelog.mjs` defaults `--changelog`/`--archive` to the conventional paths, and a
+path passed *explicitly* must exist (a typo is worth stopping for) while the conventional archive
+merely being absent reads as "nothing archived yet".
 
 **Migration is additive and verified lossless.** `lib/migrate.mjs` inserts only structural lines
 (header rule, day separators, the summary sentinel, the archive footer) and `assertLossless` requires
 every non-blank source line to survive in order — otherwise `MigrationError` aborts the install with
-nothing written. Legacy day headings the tooling can't parse (`## 2026-07-03 (parenthetical)`,
-repeated dates) are kept byte-for-byte on purpose: normalizing them would mean merging same-date
-sections, i.e. editing history.
+nothing written. `---` is exempt from that comparison on both sides: it carries no content, and the
+migrator both inserts rules and re-emits them (a day block's trailing rule is popped and rewritten),
+so it is neither position- nor count-stable. Legacy day headings are kept byte-for-byte on purpose —
+normalizing them would mean merging same-date sections, i.e. editing history. A `## DATE (parenthetical)`
+is still readable by the fold *and* by condense, so it ages out; only a heading with no ISO date
+(`## [1.2.0]`) is opaque, and it just sinks as newer days land above it.
+
+**The header rule goes above the first heading of any shape.** `tier1Bounds` takes the *first* `---` in
+the file as the top of Tier-1, so the rule the migrator inserts has to precede `## [Unreleased]` and
+`## [1.2.0] - 2026-03-29` too — not just the first heading the day-block parser can read. A Keep a
+Changelog file has no `## YYYY-MM-DD` at all: anchoring the rule to the day zone put it at EOF, made
+some pre-existing separator mid-history the Tier-1 boundary, and buried every folded entry under the
+whole file — with `--check` reporting "structure intact". Only the rule's insertion point moved; the
+legacy zone stays opaque, because repointing `firstDay` there makes the day-block loop throw on the
+content above it.
 
 **The condense helper writes nothing unless checks A–I pass.** `template/scripts/condense-changelog.mjs`
 does the mechanical splice; the *model* supplies the summary prose via temp files. Verification isn't
@@ -126,6 +141,10 @@ seeded markdown. Changing one means changing it in **all** of them plus the temp
   the one line the shed's losslessness check is allowed to supersede.
 - Heading shapes: `## YYYY-MM-DD` (Tier 1 full detail), `### YYYY-MM-DD` (Tier 2 / archive per-day),
   `### YYYY-MM-DD to YYYY-MM-DD` (Tier 3 week-range). Anything else is invisible to the regexes.
+  The Tier-1 shape tolerates **trailing text** (`## 2026-07-03 (parenthetical)`) and the fold's
+  `DAY_DATE_RE` and condense's `reH2Day` must agree on that or a legacy day is ordered by one and
+  invisible to the other — classified into no tier, never swept into a splice region, stuck forever.
+  The `###` shapes stay anchored: relaxing `reH3Date` would make a week-range parse as a single day.
 
 ## Template substitution
 
@@ -149,6 +168,7 @@ Nothing else may write these; a hand-edit is a bug, not a shortcut:
 - `docs/changelog-archive-<YEAR>.md` — written once by `--shed-year`, static thereafter.
 
 `collect-changelog.mjs --check` is what makes this ownership more than a docstring: it fails on a
-Tier-1 zone that isn't in descending date order, a duplicated `## DATE`, a missing sentinel or footer,
-or a pending fragment the fold would refuse. Wire it into CI or a pre-commit hook in target repos.
+Tier-1 zone that isn't in descending date order, a zone whose opening `---` sits *below* a `##`
+heading (the boundary is then under entries that belong inside it, so folds land mid-file), a
+duplicated `## DATE`, a missing sentinel or footer, or a pending fragment the fold would refuse. Wire it into CI or a pre-commit hook in target repos.
 Repeated *legacy* day headings are exempt — the migrator preserves those deliberately.

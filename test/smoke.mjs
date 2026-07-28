@@ -224,6 +224,111 @@ group("migrating an existing messy changelog", () => {
   })
 })
 
+/**
+ * The other real-world shape: bracketed release headings, no `## YYYY-MM-DD`
+ * anywhere, and a `---` already sitting in the middle of the history.
+ */
+const KEEP_A_CHANGELOG = `# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased]
+
+### Added
+
+- Nothing yet.
+
+## [1.2.0] - 2026-03-29
+
+### Added
+
+- Widget rendering.
+
+---
+
+## [1.1.0] - 2026-02-01
+
+### Fixed
+
+- Crash on empty input.
+`
+
+group("migrating a Keep-a-Changelog file", () => {
+  const repo = newRepo({ "docs/changelog.md": KEEP_A_CHANGELOG })
+  const before = read(repo, "docs/changelog.md")
+  install(repo)
+  const after = read(repo, "docs/changelog.md")
+
+  const noRules = (s) => contentLines(s).filter((l) => l !== "---")
+
+  test("the header rule lands above the history, not at EOF", () => {
+    // tier1Bounds() takes the FIRST `---` in the file. Appending the rule to the
+    // end of the preamble — which here is the whole file — made some pre-existing
+    // separator mid-history the Tier-1 boundary.
+    const lines = after.split("\n")
+    const rule = lines.indexOf("---")
+    const firstHeading = lines.findIndex((l) => l.startsWith("## "))
+    assert.ok(rule !== -1 && rule < firstHeading, `rule at ${rule}, heading at ${firstHeading}`)
+    assert.equal(lines[firstHeading], "## [Unreleased]")
+  })
+
+  test("no doubled separator on the zero-day-block path", () => {
+    assert.doesNotMatch(after, /---\n\n---/, after)
+  })
+
+  test("bracketed headings survive byte-for-byte", () => {
+    for (const h of ["## [Unreleased]", "## [1.2.0] - 2026-03-29", "## [1.1.0] - 2026-02-01"]) {
+      assert.ok(after.includes(h), h)
+    }
+    const kept = noRules(after).filter(
+      (l) =>
+        l !== "## Earlier Changes (Summary)" &&
+        !l.startsWith("_Nothing has aged out") &&
+        !l.startsWith("> Full per-day details available in")
+    )
+    assert.deepEqual(kept, noRules(before))
+  })
+
+  test("a folded entry lands on top, above the whole legacy history", () => {
+    fragment(repo, "2026-07-28-brand-new-a1b2.md", "### Added\n- **Brand new** — thing.\n")
+    fold(repo)
+    const cl = read(repo, "docs/changelog.md")
+    assert.ok(cl.indexOf("## 2026-07-28") < cl.indexOf("## [Unreleased]"), cl)
+    assert.ok(cl.indexOf("---") < cl.indexOf("## 2026-07-28"), cl)
+  })
+
+  test("the result passes --check", () => {
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("an [Unreleased] section above dated days doesn't push the rule below it", () => {
+    const mixed = newRepo({
+      "docs/changelog.md":
+        "# Changelog\n\n## [Unreleased]\n\n- pending thing\n\n## 2026-07-13\n\n### Added\n- **Dated** — entry.\n",
+    })
+    install(mixed)
+    const lines = read(mixed, "docs/changelog.md").split("\n")
+    assert.ok(lines.indexOf("---") < lines.indexOf("## [Unreleased]"))
+
+    fragment(mixed, "2026-07-28-newest-a1b2.md", "### Added\n- **Newest** — entry.\n")
+    fold(mixed)
+    const folded = read(mixed, "docs/changelog.md")
+    assert.ok(folded.indexOf("## 2026-07-28") < folded.indexOf("## [Unreleased]"), folded)
+    assert.equal(foldAttempt(mixed, ["--check"]).status, 0)
+  })
+
+  test("an existing header rule above the first heading is reused, not duplicated", () => {
+    const ruled = newRepo({
+      "docs/changelog.md": "# Changelog\n\nIntro.\n\n---\n\n## [Unreleased]\n\n- pending thing\n",
+    })
+    const out = install(ruled)
+    assert.ok(!out.includes("header rule"), out)
+    assert.ok(read(ruled, "docs/changelog.md").startsWith("# Changelog\n\nIntro.\n\n---\n\n## [Unreleased]"))
+  })
+})
+
 group("folding fragments", () => {
   const repo = newRepo({ "docs/changelog.md": MESSY, "package.json": '{\n  "name": "demo-app"\n}\n' })
   install(repo)
@@ -431,6 +536,22 @@ group("fold --check", () => {
     assert.equal(r.status, 1)
     assert.match(r.out, /duplicate day heading '## 2026-07-26'/)
     write(repo, "docs/changelog.md", cl)
+  })
+
+  test("a Tier-1 zone that opens below the history fails the check", () => {
+    // What a pre-1.0.1 migration of a Keep a Changelog file produced: the header
+    // rule at the bottom, so the boundary sits under entries that belong above it.
+    const stale = newRepo()
+    install(stale)
+    write(
+      stale,
+      "docs/changelog.md",
+      "# Changelog\n\n## [Unreleased]\n\n- pending thing\n\n---\n\n## Earlier Changes (Summary)\n\n" +
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)\n"
+    )
+    const r = foldAttempt(stale, ["--check"])
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /sits above the '---' that opens the Tier-1 zone/, r.out)
   })
 
   test("a missing footer fails the check", () => {
@@ -684,6 +805,96 @@ Early July theme summary.
   test("the post-condense file still passes fold --check", () => {
     const r = foldAttempt(repo, ["--check"])
     assert.equal(r.status, 0, r.out)
+  })
+})
+
+group("condense sees the same day headings the fold does", () => {
+  /** MIDLIFE_CL with legacy trailing text on the topmost condensing day. */
+  const legacyRepo = (heading = "## 2026-07-20 (DocuSeal implementation plan)") => {
+    const dir = midlifeRepo()
+    write(dir, "docs/changelog.md", MIDLIFE_CL.replace("## 2026-07-20", heading))
+    return dir
+  }
+
+  test("a legacy parenthetical heading is classified into a tier", () => {
+    // The fold orders it (its DAY_DATE_RE tolerates trailing text); an anchored
+    // regex here left it in no tier at all, unable to ever age out.
+    const r = condense(legacyRepo(), [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Tier 2 .*\(>= 2026-07-12\): 2026-07-20, 2026-07-18/)
+  })
+
+  test("its anchor is the heading as written, not a reconstructed '## DATE'", () => {
+    const r = condense(legacyRepo(), [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.match(r.out, /--cl-start '## 2026-07-20 \(DocuSeal implementation plan\)'/, r.out)
+  })
+
+  test("two same-date legacy headings still yield an anchor that resolves once", () => {
+    const dir = midlifeRepo()
+    write(
+      dir,
+      "docs/changelog.md",
+      MIDLIFE_CL.replace(
+        "## 2026-07-20\n",
+        "## 2026-07-20 (provider decision)\n\n### Changed\n- **Same day, twice** — q.\n\n---\n\n## 2026-07-20 (retro)\n"
+      )
+    )
+    const r = condense(dir, [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /--cl-start '## 2026-07-20 \(provider decision\)'/, r.out)
+  })
+
+  test("a legacy day actually ages out end to end", () => {
+    const dir = legacyRepo()
+    write(
+      dir,
+      "cl-mid.md",
+      `## Earlier Changes (Summary)
+
+### 2026-07-20
+- **Six days ago** — condensed.
+
+### 2026-07-18
+- **Eight days ago** — condensed.
+
+### 2026-07-14
+- **Twelve days ago** — still Tier 2.
+
+### 2026-07-02 to 2026-07-05
+Early July theme summary.
+
+`
+    )
+    write(dir, "ar-new.md", "### 2026-07-05\n- d.\n\n---\n\n### 2026-07-02\n- d.\n\n---\n\n")
+    const r = condense(dir, [
+      ...CL_AR,
+      "--cl-start", "## 2026-07-20 (DocuSeal implementation plan)",
+      "--cl-end", "### 2026-06-01 to 2026-06-07",
+      "--cl-mid", "cl-mid.md",
+      "--ar-before", "### 2026-06-07",
+      "--ar-content", "ar-new.md",
+      "--keep-detailed-since", "2026-07-23",
+      "--drop-ranges-before", "2026-06-14",
+    ])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(dir, "docs/changelog.md")
+    assert.ok(!cl.includes("(DocuSeal implementation plan)"), "legacy heading is gone")
+    assert.match(cl, /^### 2026-07-20$/m, "and came back as a canonical Tier-2 entry")
+    assert.equal(foldAttempt(dir, ["--check"]).status, 0)
+  })
+
+  test("Check C catches a legacy day dropped without being archived", () => {
+    const dir = legacyRepo("## 2026-07-20 (retro)")
+    write(dir, "cl-mid.md", "## Earlier Changes (Summary)\n\n")
+    assertCheckFails(
+      condense(dir, [
+        ...CL_AR,
+        "--cl-start", "## 2026-07-20 (retro)",
+        "--cl-end", "### 2026-06-01 to 2026-06-07",
+        "--cl-mid", "cl-mid.md",
+      ]),
+      "C"
+    )
   })
 })
 
@@ -996,11 +1207,58 @@ group("condense --shed-year", () => {
     assert.match(r.out, /Tier-4 dropped 2 week-range\(s\)/)
   })
 
-  test("--shed-year requires --archive", () => {
+  test("--archive defaults to the conventional path, no flag needed", () => {
     const repo = midlifeRepo()
-    const r = condense(repo, ["--changelog", "docs/changelog.md", "--shed-year", "2025"])
-    assert.equal(r.status, 1)
-    assert.match(r.out, /--shed-year requires --archive/)
+    const r = condense(repo, ["--shed-year", "2025"])
+    assert.equal(r.status, 0, r.out)
+    assert.ok(existsSync(join(repo, "docs/changelog-archive-2025.md")))
+  })
+
+  test("a named archive that doesn't exist is a usage error, not a stack trace", () => {
+    const repo = midlifeRepo()
+    const r = condense(repo, ["--archive", "docs/nope.md", "--shed-year", "2025"])
+    assert.equal(r.status, 2, r.out)
+    assert.match(r.out, /not found — pass --archive/)
+    assert.doesNotMatch(r.out, /ENOENT|at Object\./, r.out)
+  })
+})
+
+group("condense path defaults", () => {
+  const repo = midlifeRepo()
+
+  test("--plan needs no --changelog or --archive", () => {
+    const r = condense(repo, ["--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Tier 3 .*\(>= 2026-06-14\): 2026-07-05, 2026-07-02/)
+  })
+
+  test("the printed command stays repo-relative, not absolute", () => {
+    const r = condense(repo, ["--plan", "--today", "2026-07-26"])
+    assert.match(r.out, /^\s+--changelog docs\/changelog\.md \\$/m, r.out)
+    assert.match(r.out, /^\s+--archive docs\/changelog-archive\.md \\$/m, r.out)
+  })
+
+  test("paths resolve from the script, not the cwd", () => {
+    const r = attempt(
+      "node",
+      [join(repo, "scripts/condense-changelog.mjs"), "--plan", "--today", "2026-07-26"],
+      join(repo, "docs")
+    )
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Tier 1 .*2026-07-26, 2026-07-25/)
+  })
+
+  test("a named changelog that doesn't exist is a usage error", () => {
+    const r = condense(repo, ["--changelog", "docs/nope.md", "--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 2, r.out)
+    assert.match(r.out, /not found — pass --changelog/)
+  })
+
+  test("a missing conventional archive reads as 'nothing archived', not an error", () => {
+    const bare = midlifeRepo()
+    rmSync(join(bare, "docs/changelog-archive.md"))
+    const r = condense(bare, ["--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
   })
 })
 

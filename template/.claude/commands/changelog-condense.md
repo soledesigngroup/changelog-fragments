@@ -94,9 +94,10 @@ prefer it over editing the files by hand.
    ```
    Omit the three `--ar-*` flags on runs where nothing has reached Tier 3. **Pass
    `--drop-ranges-before <today − 42 days>` on every run** to age old week-ranges out (Tier 4) — the
-   script computes which trailing ranges to drop and no-ops if none qualify. It needs `--archive` for
-   the coverage check (read-only; nothing is written there), so include `--archive docs/changelog-archive.md`
-   even on a Tier-4-only run. The three `--cl-*` flags are optional — omit them to run Tier 4 alone.
+   script computes which trailing ranges to drop and no-ops if none qualify. It reads `--archive` for
+   the coverage check (read-only; nothing is written there), so keep `--archive docs/changelog-archive.md`
+   on the command even for a Tier-4-only run — it defaults to that path, but a destructive run should
+   say what it's reading. The three `--cl-*` flags are optional — omit them to run Tier 4 alone.
 
 The script enforces: anchors are unambiguous and ordered; no duplicate headings within a file; every
 date removed from the changelog is present as a per-day entry in the archive; the 0–3 day window

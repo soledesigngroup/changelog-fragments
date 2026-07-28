@@ -36,6 +36,15 @@
  *   --dry-run   run every check and print the same report, then stop without writing
  *   -h, --help  print this header
  *
+ * --changelog and --archive default to docs/changelog.md and docs/changelog-archive.md
+ * resolved from THIS SCRIPT's parent directory (not the cwd), matching the fold, so
+ * `--plan` and a Tier-4-only run need no paths spelled out. A path passed explicitly
+ * must exist; the conventional archive merely being absent reads as "nothing archived".
+ *
+ * A day heading is `## YYYY-MM-DD` with any trailing text — the same shape the fold
+ * accepts, so a legacy `## 2026-07-03 (parenthetical)` preserved by the migrator ages
+ * out like any other day instead of being invisible here and stuck in Tier 1 forever.
+ *
  * Exit 0 = wrote (or would have written). Exit 1 = verification failed, nothing
  * written. Exit 2 = bad arguments.
  *
@@ -89,9 +98,27 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
+
+const SELF = fileURLToPath(import.meta.url)
+const ROOT = resolve(dirname(SELF), "..")
+
+// Conventional paths, resolved from this script's own directory rather than the
+// process cwd (the fold does the same), so running the helper by hand from a
+// subdirectory works. An explicit --changelog / --archive always wins.
+const DEFAULT_CHANGELOG = join(ROOT, "docs/changelog.md")
+const DEFAULT_ARCHIVE = join(ROOT, "docs/changelog-archive.md")
 
 // Fresh regex per call — a shared /g regex carries lastIndex between scans.
-const reH2Date = () => /^## (\d{4}-\d{2}-\d{2})[ \t]*$/gm
+/**
+ * A full-detail day heading. Deliberately tolerant of the legacy trailing text the
+ * migrator preserves (`## 2026-07-03 (DocuSeal implementation plan)`) — this has to
+ * accept exactly what the fold's DAY_DATE_RE accepts, or a legacy day is ordered
+ * correctly by the fold yet invisible here: classified into no tier, never swept
+ * into a splice region, and unable to ever age out.
+ */
+const reH2Day = () => /^##[ \t]+(\d{4}-\d{2}-\d{2})(?:[ \t].*)?$/gm
 const reH3Date = () => /^### (\d{4}-\d{2}-\d{2})[ \t]*$/gm
 const reH3Range = () => /^### (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})[ \t]*$/gm
 const reAnyHeading = () =>
@@ -104,14 +131,14 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 /** Dates that appear as a single-day heading (## or ###), as a Set of strings. */
 function singleDates(text) {
   const out = new Set()
-  for (const m of text.matchAll(reH2Date())) out.add(m[1])
+  for (const m of text.matchAll(reH2Day())) out.add(m[1])
   for (const m of text.matchAll(reH3Date())) out.add(m[1])
   return out
 }
 
 function h2Dates(text) {
   const out = new Set()
-  for (const m of text.matchAll(reH2Date())) out.add(m[1])
+  for (const m of text.matchAll(reH2Day())) out.add(m[1])
   return out
 }
 
@@ -241,13 +268,21 @@ function planTiers(clText, arText, today) {
   const tier2From = shiftDays(today, -14) // Tier 2: 4-14 days
   const tier3From = shiftDays(today, -42) // Tier 3: 15-42 days; Tier 4 below
 
-  const fullDetail = [...clText.matchAll(reH2Date())].map((m) => m[1])
+  // Heading TEXT is kept alongside the date: a legacy heading's anchor has to be
+  // the line as written, not a reconstructed `## DATE`, so that two same-date
+  // legacy headings still yield an anchor that resolves exactly once (Check A).
+  const fullDetailHeads = [...clText.matchAll(reH2Day())].map((m) => ({
+    date: m[1],
+    text: m[0].trim(),
+  }))
+  const fullDetail = fullDetailHeads.map((h) => h.date)
   const summary = summarySection(clText)
   const summaryDays = [...summary.matchAll(reH3Date())].map((m) => m[1])
   const summaryRanges = [...summary.matchAll(reH3Range())].map((m) => [m[1], m[2]])
 
   const tier1 = uniqSorted(fullDetail.filter((d) => d >= keepDetailedSince)).reverse()
-  const condensing = fullDetail.filter((d) => d < keepDetailedSince)
+  const condensingHeads = fullDetailHeads.filter((h) => h.date < keepDetailedSince)
+  const condensing = condensingHeads.map((h) => h.date)
   // A day only ages one tier at a time in the normal case, but a long-neglected
   // changelog can have Tier-1 blocks that belong straight in a week-range.
   const toTier2 = uniqSorted(condensing.filter((d) => d >= tier2From)).reverse()
@@ -276,8 +311,10 @@ function planTiers(clText, arText, today) {
     if (changedSummaryKeys.has(h.key)) lastChanged = i
   })
 
+  // The splice is positional, so the anchor is the TOPMOST heading that changes —
+  // in a well-ordered Tier-1 zone that is also the newest one.
   let clStart = null
-  if (condensing.length) clStart = `## ${uniqSorted(condensing).reverse()[0]}`
+  if (condensingHeads.length) clStart = condensingHeads[0].text
   else if (lastChanged !== -1) clStart = summaryHeadings.find((h) => changedSummaryKeys.has(h.key)).text
 
   const clEnd =
@@ -353,13 +390,13 @@ function formatPlan(p, args) {
   }
 
   const cmd = ["node scripts/condense-changelog.mjs \\"]
-  cmd.push(`    --changelog ${args.changelog} \\`)
+  cmd.push(`    --changelog ${forDisplay(args.changelog)} \\`)
   if (p.clStart) {
     cmd.push(`    --cl-start ${shq(p.clStart)} \\`)
     cmd.push(`    --cl-end   ${shq(p.clEnd)} \\`)
     cmd.push(`    --cl-mid   /tmp/cl-mid.md \\`)
   }
-  cmd.push(`    --archive ${args.archive ?? "docs/changelog-archive.md"} \\`)
+  cmd.push(`    --archive ${forDisplay(args.archive)} \\`)
   if (p.needsArchive) {
     cmd.push(`    --ar-before ${shq(p.arBefore ?? "<newest archive heading>")} \\`)
     cmd.push(`    --ar-content /tmp/ar-new.md \\`)
@@ -574,6 +611,19 @@ function usageError(msg) {
   process.exit(2)
 }
 
+/** Read a file the run can't proceed without, without a raw ENOENT stack trace. */
+function readRequired(path, flag) {
+  try {
+    return readFileSync(path, "utf8")
+  } catch (err) {
+    if (err.code === "ENOENT") usageError(`${path} not found — pass ${flag} <path>`)
+    throw err
+  }
+}
+
+/** Repo-relative where possible, so the command --plan prints stays pasteable. */
+const forDisplay = (path) => (path.startsWith(`${ROOT}/`) ? path.slice(ROOT.length + 1) : path)
+
 function abort(fails) {
   console.error("ABORT - nothing written. Verification failed:")
   for (const f of fails) console.error(`  - ${f}`)
@@ -584,16 +634,23 @@ function main() {
   const args = parseArgs(process.argv.slice(2))
 
   if (args.help) {
-    console.log(readFileSync(new URL(import.meta.url), "utf8").split("*/")[0])
+    console.log(readFileSync(SELF, "utf8").split("*/")[0])
     return 0
   }
-  if (!args.changelog) usageError("--changelog is required")
   for (const k of ["keepDetailedSince", "dropRangesBefore", "today"]) {
     if (args[k] && !DATE_RE.test(args[k])) usageError(`--${k} must be YYYY-MM-DD`)
   }
   if (args.shedYear && !/^\d{4}$/.test(args.shedYear)) usageError("--shed-year must be YYYY")
 
-  const oldCl = readFileSync(args.changelog, "utf8")
+  // A path the caller named must exist (a typo is worth stopping for); the
+  // conventional archive merely not being there yet reads as "nothing archived".
+  const namedArchive = Boolean(args.archive)
+  args.changelog ??= DEFAULT_CHANGELOG
+  args.archive ??= DEFAULT_ARCHIVE
+  const readArchive = () =>
+    namedArchive || existsSync(args.archive) ? readRequired(args.archive, "--archive") : ""
+
+  const oldCl = readRequired(args.changelog, "--changelog")
   const fails = []
 
   // --- Planning mode: read-only, returns before any splice ---
@@ -601,8 +658,7 @@ function main() {
     if (!args.today) {
       usageError("--plan requires --today YYYY-MM-DD (pass it explicitly; the clock is never read)")
     }
-    const arText = args.archive ? readFileSync(args.archive, "utf8") : ""
-    console.log(formatPlan(planTiers(oldCl, arText, args.today), args))
+    console.log(formatPlan(planTiers(oldCl, readArchive(), args.today), args))
     return 0
   }
   if (args.today) usageError("--today is only meaningful with --plan")
@@ -621,14 +677,10 @@ function main() {
     )
     return abort(fails)
   }
-  if (args.dropRangesBefore && !args.archive) {
-    fails.push("--drop-ranges-before requires --archive (read-only) for the coverage check")
-    return abort(fails)
-  }
-  if (args.shedYear && !args.archive) {
-    fails.push("--shed-year requires --archive")
-    return abort(fails)
-  }
+  // --archive is never unset now (it defaults to the conventional path), so the
+  // coverage checks below always have something to read. An archive that is empty
+  // or absent isn't waved through: Check H reports every dropped range as
+  // uncovered, and Check I refuses a shed with no headings to move.
 
   // --- Check A + Tier-2/3 splice (optional) ---
   let newCl = oldCl
@@ -646,13 +698,13 @@ function main() {
   }
 
   // --- Archive splice (optional) ---
-  const doArchive = Boolean(args.archive && args.arBefore && args.arContent)
+  const doArchive = Boolean(args.arBefore && args.arContent)
   if ((args.arBefore || args.arContent) && !doArchive) {
-    fails.push("archive splice needs all of --archive, --ar-before, --ar-content (or none)")
+    fails.push("archive splice needs both --ar-before and --ar-content (or neither)")
     return abort(fails)
   }
 
-  const oldAr = args.archive ? readFileSync(args.archive, "utf8") : ""
+  const oldAr = readArchive()
   let newAr = oldAr
   if (doArchive) {
     const arContent = readFileSync(args.arContent, "utf8")

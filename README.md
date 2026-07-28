@@ -131,14 +131,24 @@ racing, so "run it when the tree is quiet" is enforced rather than merely advise
 migration is **purely additive** — it inserts a header rule, a `---` between day blocks, the
 `## Earlier Changes (Summary)` sentinel, and the archive footer, and it **rewrites no entry text**.
 
-Legacy day headings are preserved byte-for-byte, including shapes the tooling doesn't parse
-(`## 2026-07-03 (some parenthetical)`) and repeated dates. Those headings are simply invisible to the
-fold and condense regexes; they age out naturally as condensing rewrites them. Normalizing them would
-mean merging same-date sections — editing history — which this deliberately doesn't do.
+The header rule goes above the **first heading of any shape**, not above the first heading the
+migrator can read as a day. That matters because the first `---` in the file is what marks the top of
+the Tier-1 zone: a Keep a Changelog file (`## [Unreleased]`, `## [1.2.0] - 2026-03-29`) has no
+`## YYYY-MM-DD` heading at all, and anchoring the rule to the day zone would drop it at the end of the
+file and fold every new entry in *underneath* the whole history.
+
+Legacy day headings are preserved byte-for-byte, including parentheticals
+(`## 2026-07-03 (some parenthetical)`) and repeated dates. The fold and the condense planner both read
+the leading ISO date off such a heading and ignore the trailing text, so a legacy day still sorts
+correctly and still ages out — it comes back as a canonical `### 2026-07-03` summary the first time
+condensing reaches it. Only shapes with no ISO date at all (`## [1.2.0]`) stay opaque to the tooling;
+they sink down the Tier-1 zone as newer days land above them. Normalizing any of it would mean merging
+same-date sections — editing history — which this deliberately doesn't do.
 
 Every migration is verified lossless before anything is written: each non-blank line of the original
-must appear in the output, in order, or the install aborts having written nothing. Re-running the
-installer never re-migrates a file that's already in the expected layout.
+must appear in the output, in order, or the install aborts having written nothing. (`---` is exempt on
+both sides — it carries no content, and the migrator both inserts rules and re-emits them between day
+blocks.) Re-running the installer never re-migrates a file that's already in the expected layout.
 
 ## Design notes
 

@@ -1,6 +1,6 @@
 {
   "name": "changelog-fragments",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "Collision-free, agent-friendly changelog: one fragment file per session, folded and condensed by two dependency-free scripts.",

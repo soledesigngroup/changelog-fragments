@@ -16,6 +16,55 @@ Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.0.0`.
 
 ---
 
+## [1.0.1] — 2026-07-28
+
+Three adoption bugs found installing over an existing Keep a Changelog file. **Upgrade: recommended —
+re-run `install.mjs`. Safe on an existing installation.** If you already installed over a
+Keep-a-Changelog-style file, see the note at the end.
+
+### Fixed
+
+- **The header rule now goes above the first heading of any shape**, not above the first heading the
+  migrator reads as a day (`lib/migrate.mjs`). `tier1Bounds()` takes the first `---` in the file as
+  the top of the Tier-1 zone, and a Keep a Changelog file (`## [Unreleased]`, `## [1.2.0]`) has no
+  `## YYYY-MM-DD` heading at all — so the rule was appended at EOF, some pre-existing separator
+  mid-history became the boundary, and every folded entry landed *below* the whole history. `--check`
+  reported "structure intact" throughout. Only the rule's insertion point moved; the legacy zone is
+  still parsed exactly as before.
+- **The migrator no longer emits a doubled `---`** on the same path (a file with no parseable day
+  blocks got both the preamble rule and the sentinel's).
+- **`condense-changelog.mjs` now reads a day heading the way the fold does** — `## YYYY-MM-DD` with
+  any trailing text. Its anchored regex made a migrated `## 2026-07-03 (DocuSeal implementation plan)`
+  invisible: ordered correctly by the fold, classified into no tier by `--plan`, never swept into a
+  splice region, and so unable to ever age out. The `###` regexes stay anchored — relaxing those would
+  make a week-range parse as a single day. `--plan` also anchors on the heading **as written**, so two
+  same-date legacy headings still yield a `--cl-start` that resolves exactly once (Check A).
+
+### Added
+
+- **`--check` now catches a mis-anchored Tier-1 zone** — a `##` heading sitting above the `---` that
+  opens the zone. That is precisely the layout the header-rule bug produced, and the old check passed
+  it as "structure intact"; running `--check` will now tell a 1.0.0-migrated repo that it needs the
+  one-line repair described below.
+
+### Changed
+
+- **`--changelog` and `--archive` default to `docs/changelog.md` and `docs/changelog-archive.md`**,
+  resolved from the script's own parent directory like the fold already does — so `--plan` and a
+  Tier-4-only run need no paths spelled out. An explicitly named path that doesn't exist is now a
+  clean usage error instead of a raw `ENOENT` stack trace; a missing archive at the *conventional*
+  path reads as "nothing archived yet". Nothing is waved through: Check H still reports every dropped
+  range as uncovered against an empty archive, and Check I still refuses a shed with no headings.
+
+### Note for existing installs
+
+Re-running the installer will **not** repair a `changelog.md` that was migrated by 1.0.0 —
+`isMigrated()` correctly declines to touch a file that already has the sentinel and footer. If your
+Tier-1 entries are landing mid-file, move the `---` that follows your title so it sits above the first
+`##` heading, and delete the stray one it was paired with. `--check` will confirm the order.
+
+---
+
 ## [1.0.0] — 2026-07-26
 
 First tagged release. **Upgrade: n/a.**
