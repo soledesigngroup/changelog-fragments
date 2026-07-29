@@ -20,6 +20,9 @@ import { dirname, join, resolve, basename } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { migrateChangelog, isMigrated, MigrationError } from "./lib/migrate.mjs"
+// The payload's own audit, reused here so an install over a file this tool wrote
+// in an earlier version still says something when that layout is wrong.
+import { auditChangelog } from "./template/scripts/collect-changelog.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TEMPLATE = join(HERE, "template")
@@ -130,6 +133,9 @@ function substitute(text) {
 const actions = []
 const record = (verb, path, note) => actions.push({ verb, path, note })
 
+/** Structural problems found in a changelog.md this installer left alone. */
+let changelogProblems = []
+
 function writeOut(relPath, content, { mode } = {}) {
   const abs = join(target, relPath)
   const existed = existsSync(abs)
@@ -172,7 +178,18 @@ if (!existsSync(clPath)) {
 } else {
   const before = readFileSync(clPath, "utf8")
   if (isMigrated(before)) {
-    record("unchanged", "docs/changelog.md", "already in the expected layout")
+    // Having the sentinel and the footer is all `isMigrated` claims, and re-migrating
+    // a file that has them would rewrite history — so the structure is audited
+    // instead. A pre-1.0.1 migration of a Keep a Changelog file lands here: it looks
+    // migrated, but its Tier-1 zone opens below the history and folds land mid-file.
+    changelogProblems = auditChangelog(before)
+    record(
+      "unchanged",
+      "docs/changelog.md",
+      changelogProblems.length
+        ? `already in the expected layout, but its structure needs a look (${changelogProblems.length} problem(s) below)`
+        : "already in the expected layout"
+    )
   } else {
     let migrated
     try {
@@ -220,6 +237,18 @@ const width = Math.max(...actions.map((a) => a.verb.length))
 console.log(`\nchangelog-fragments → ${target}${args.dryRun ? "  (dry run — nothing written)" : ""}\n`)
 for (const a of actions) {
   console.log(`  ${a.verb.padEnd(width)}  ${a.path}${a.note ? `  — ${a.note}` : ""}`)
+}
+
+if (changelogProblems.length) {
+  console.warn(
+    `\n! docs/changelog.md already had the expected sentinel and footer, so it was left alone —\n` +
+      `  but ${FOLD_CMD_CHECK} reports:\n`
+  )
+  for (const p of changelogProblems) console.warn(`    - ${p}`)
+  console.warn(
+    `\n  Re-running this installer will not repair it: re-migrating a file that already has the\n` +
+      `  structure would rewrite history. Fix it by hand, then re-run the check.`
+  )
 }
 
 const snippet = substitute(readFileSync(join(TEMPLATE, "claude-md-snippet.md"), "utf8"))

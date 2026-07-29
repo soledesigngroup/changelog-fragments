@@ -1291,6 +1291,47 @@ group("fresh repo with no changelog", () => {
   })
 })
 
+group("installing over a changelog the installer won't touch", () => {
+  /** What a pre-1.0.1 migration of a Keep a Changelog file left behind. */
+  const STALE = `# Changelog
+
+## [Unreleased]
+
+- pending thing
+
+---
+
+## Earlier Changes (Summary)
+
+> Full per-day details available in [changelog-archive.md](changelog-archive.md)
+`
+
+  test("an already-migrated file with a bad layout is reported, not silently kept", () => {
+    const repo = newRepo({ "docs/changelog.md": STALE })
+    const r = attempt("node", [INSTALL, repo], ROOT) // the detail goes to stderr
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /unchanged\s+docs\/changelog\.md\s+— already in the expected layout, but/, r.out)
+    assert.match(r.out, /sits above the '---' that opens the Tier-1 zone/, r.out)
+    assert.match(r.out, /Re-running this installer will not repair it/, r.out)
+  })
+
+  test("it is a warning, not an abort — the rest of the install still lands", () => {
+    const repo = newRepo({ "docs/changelog.md": STALE })
+    install(repo)
+    assert.equal(read(repo, "docs/changelog.md"), STALE, "changelog left byte-identical")
+    assert.ok(existsSync(join(repo, "scripts/collect-changelog.mjs")))
+    assert.ok(existsSync(join(repo, "docs/changelog-archive.md")))
+  })
+
+  test("a healthy already-migrated file says nothing extra", () => {
+    const repo = newRepo()
+    install(repo)
+    const out = install(repo)
+    assert.match(out, /unchanged\s+docs\/changelog\.md\s+— already in the expected layout$/m, out)
+    assert.doesNotMatch(out, /needs a look/, out)
+  })
+})
+
 group("idempotency", () => {
   const repo = newRepo({ "docs/changelog.md": MESSY, "package.json": '{\n  "name": "demo-app"\n}\n' })
   install(repo)

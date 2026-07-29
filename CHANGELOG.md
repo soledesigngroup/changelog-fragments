@@ -46,6 +46,10 @@ Keep-a-Changelog-style file, see the note at the end.
   opens the zone. That is precisely the layout the header-rule bug produced, and the old check passed
   it as "structure intact"; running `--check` will now tell a 1.0.0-migrated repo that it needs the
   one-line repair described below.
+- **The installer audits a changelog it decides not to touch.** `isMigrated()` only claims the
+  sentinel and footer are present, so a file migrated by 1.0.0 looks settled and is correctly left
+  alone — silently, until now. The install report says the structure needs a look and prints what
+  `--check` would say. It's a warning, not an abort: everything else still installs.
 
 ### Changed
 
@@ -59,9 +63,11 @@ Keep-a-Changelog-style file, see the note at the end.
 ### Note for existing installs
 
 Re-running the installer will **not** repair a `changelog.md` that was migrated by 1.0.0 —
-`isMigrated()` correctly declines to touch a file that already has the sentinel and footer. If your
-Tier-1 entries are landing mid-file, move the `---` that follows your title so it sits above the first
-`##` heading, and delete the stray one it was paired with. `--check` will confirm the order.
+`isMigrated()` correctly declines to touch a file that already has the sentinel and footer, and
+re-migrating one that does would mean rewriting history. It will now *tell you*, though: the install
+report flags the layout and prints the problem. The repair is one line — move the `---` that follows
+your title so it sits above the first `##` heading, and delete the stray one it was paired with. Then
+`node scripts/collect-changelog.mjs --check` will confirm the order.
 
 ---
 

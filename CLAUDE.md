@@ -125,7 +125,11 @@ comparison.
 guards the CLI as described above.
 
 **The installer is idempotent.** Re-running it updates scripts and commands in place. `isMigrated()`
-gates re-migration; `writeOut()` reports `unchanged` when content matches byte-for-byte.
+gates re-migration; `writeOut()` reports `unchanged` when content matches byte-for-byte. It never
+*repairs* an already-migrated changelog — re-migrating a file that already has the structure would
+rewrite history — so it imports the payload's `auditChangelog` and warns instead. That import is the
+one place the installer layer reaches into the payload, and it works only because
+`collect-changelog.mjs` guards its CLI behind `invokedDirectly()`.
 
 ## Shared structural anchors
 
