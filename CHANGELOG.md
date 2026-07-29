@@ -12,7 +12,7 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.0.0`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.0.1`.
 
 ---
 

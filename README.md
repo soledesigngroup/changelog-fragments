@@ -213,7 +213,7 @@ that are load-bearing, so read that before changing behavior.
 
 Releases are tagged and noted in [CHANGELOG.md](CHANGELOG.md); each entry says whether re-running
 `install.mjs` over an existing installation is safe. Pin a version with
-`npx degit soledesigngroup/changelog-fragments#v1.0.0`.
+`npx degit soledesigngroup/changelog-fragments#v1.0.1`.
 
 ## License
 
