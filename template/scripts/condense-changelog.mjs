@@ -15,15 +15,26 @@
  *      before --cl-start (the Tier-1 full-detail entries) and from --cl-end onward
  *      (older week-ranges + footer) is preserved byte-for-byte. This group is
  *      optional; omit all three --cl-* flags on a Tier-4-only run.
- *   2. (Optional) Inserts --ar-content into the archive immediately BEFORE
- *      --ar-before. Only used on runs where dates age past Tier 3 and collapse
- *      into week-ranges.
- *   3. (Tier 4 drop) With --drop-ranges-before <DATE>, removes trailing week-range
+ *   2. (Verbatim auto-archive) Every full-detail `## DATE` block the splice
+ *      removes is moved into the archive by THIS script, byte-for-byte, as a
+ *      per-day `### DATE` entry (newest first, above the existing entries). The
+ *      model never re-types detail, the archive genuinely holds the full text of
+ *      every entry that has aged out of Tier 1, and grepping the docs/ tree finds
+ *      history verbatim instead of a paraphrase. Verified — Check J.
+ *   3. (Legacy block re-emit) A `##` heading with no ISO date (`## [1.2.0]`,
+ *      `## [Unreleased]`) that the splice region swallows is re-emitted above the
+ *      new content by the script itself, so a migrated Keep-a-Changelog history
+ *      can never be lost to a condense run. Verified — Check K.
+ *   4. (Optional) Inserts --ar-content into the archive immediately BEFORE
+ *      --ar-before. Only needed for summary-section dates collapsing into
+ *      week-ranges whose detail was never archived — i.e. changelogs condensed
+ *      under the pre-1.1 flow, where Tier-2 summarization discarded the detail.
+ *   5. (Tier 4 drop) With --drop-ranges-before <DATE>, removes trailing week-range
  *      blocks whose END date is older than <DATE> from the changelog entirely.
  *      Their per-day detail already lives in the archive (verified — Check H), so
  *      this is lossless dedup that stops the file growing without bound. Requires
  *      --archive (read-only) for the coverage check; nothing is written to it.
- *   4. (Archive year shed) With --shed-year <YYYY>, moves the oldest complete
+ *   6. (Archive year shed) With --shed-year <YYYY>, moves the oldest complete
  *      calendar year out of the archive into a static changelog-archive-<YYYY>.md
  *      and refreshes the "Earlier years" pointer. A pure partition, verified
  *      heading-for-heading and line-for-line (Check I).
@@ -88,6 +99,11 @@
  *   I. (if --shed-year) the year being shed is the oldest present and not the only
  *      one, its target file doesn't already exist, and the partition conserves
  *      every archive heading and every non-blank line exactly once.
+ *   J. A full-detail day leaving the changelog must not already have an archive
+ *      entry (the script archives it verbatim itself — a copy in --ar-content
+ *      would duplicate it), and the auto-archive must conserve every line.
+ *   K. Legacy `##` blocks with no ISO date survive any splice: same heading
+ *      count as before, and every content line still present.
  *
  * Self-contained: no imports beyond node builtins, no build step, no deps.
  * Dates are compared as ISO strings (YYYY-MM-DD sorts lexicographically), so
@@ -162,11 +178,87 @@ function countOccurrences(text, sub) {
   return n
 }
 
-/** Replace text from `start` (inclusive) to `end` (exclusive) with `replacement`. */
-function spliceReplace(text, start, end, replacement) {
-  const i = text.indexOf(start)
-  const j = text.indexOf(end)
-  return text.slice(0, i) + replacement + text.slice(j)
+const stripTrailingJunk = (lines) => {
+  while (lines.length && (lines[lines.length - 1].trim() === "" || /^-{3,}\s*$/.test(lines[lines.length - 1])))
+    lines.pop()
+  while (lines.length && lines[0].trim() === "") lines.shift()
+  return lines
+}
+
+/**
+ * The verbatim `## DATE …` full-detail blocks in a stretch of changelog text, in
+ * file order (newest first in a well-ordered Tier-1 zone). `trailing` carries a
+ * legacy heading's text after the date; `body` is every line under the heading,
+ * byte-for-byte, minus surrounding blanks and the block's trailing `---`.
+ */
+function dayBlocksIn(text) {
+  const blocks = []
+  let cur = null
+  for (const line of text.split("\n")) {
+    if (/^##[ \t]/.test(line)) {
+      if (cur) blocks.push(cur)
+      const m = line.match(/^##[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*(.*)$/)
+      cur = m ? { date: m[1], trailing: m[2].trim(), body: [] } : null
+    } else if (cur) {
+      cur.body.push(line)
+    }
+  }
+  if (cur) blocks.push(cur)
+  for (const b of blocks) stripTrailingJunk(b.body)
+  return blocks
+}
+
+/**
+ * `##` blocks whose heading carries no ISO date (`## [Unreleased]`,
+ * `## [1.2.0] - 2026-03-29`) — the opaque legacy zone a migrated Keep-a-Changelog
+ * file keeps at the bottom of Tier-1. The splice region swallows them whenever a
+ * full-detail day condenses, so the script re-emits them itself (and Check K
+ * verifies nothing of theirs was lost).
+ */
+function legacyBlocksIn(text) {
+  const blocks = []
+  let cur = null
+  for (const line of text.split("\n")) {
+    if (/^##[ \t]/.test(line)) {
+      if (cur) blocks.push(cur)
+      const isDay = /^##[ \t]+\d{4}-\d{2}-\d{2}([ \t].*)?$/.test(line)
+      const isSentinel = /^##\s+Earlier Changes/i.test(line)
+      cur = !isDay && !isSentinel ? { heading: line, body: [] } : null
+    } else if (cur) {
+      cur.body.push(line)
+    }
+  }
+  if (cur) blocks.push(cur)
+  for (const b of blocks) {
+    stripTrailingJunk(b.body)
+    b.text = [b.heading, "", ...b.body].join("\n")
+  }
+  return blocks
+}
+
+/**
+ * Insert `entries` at the top of the archive's date zone: above the newest
+ * existing date heading, else above the seeded placeholder note, else below the
+ * header rule. An absent archive gets a minimal header so the first condense of
+ * a repo that never had one still lands somewhere sensible.
+ */
+function insertIntoArchive(arText, entries) {
+  if (!arText.trim()) {
+    return (
+      "# Changelog Archive\n\nFull per-day detail for entries that have aged out of " +
+      "`docs/changelog.md`. Newest at top.\n\n---\n\n" + entries
+    )
+  }
+  const first = [...arText.matchAll(reAnyHeading())][0]
+  if (first) return arText.slice(0, first.index) + entries + arText.slice(first.index)
+  const ph = arText.match(/^[ \t]*_Nothing archived[^\n]*/m)
+  if (ph) return arText.slice(0, ph.index) + entries + arText.slice(ph.index)
+  const hr = arText.match(/^-{3,}[ \t]*$/m)
+  if (hr) {
+    const at = hr.index + hr[0].length
+    return arText.slice(0, at) + "\n\n" + entries.replace(/\n+$/, "\n") + arText.slice(at)
+  }
+  return arText.replace(/\n*$/, "\n\n") + entries
 }
 
 /**
@@ -296,6 +388,17 @@ function planTiers(clText, arText, today) {
   ).reverse()
   const droppableRanges = summaryRanges.filter(([, end]) => end < tier3From)
 
+  // Full-detail days leaving Tier 1 are moved into the archive verbatim by the
+  // run itself. --ar-content is only for summary-section dates collapsing whose
+  // detail was never archived — changelogs condensed under the pre-1.1 flow,
+  // where Tier-2 summarization discarded the full text.
+  const condensingSet = new Set(condensing)
+  const arSingles = singleDates(arText)
+  const autoArchive = uniqSorted(condensing).reverse()
+  const needArContent = uniqSorted(
+    [...collapsing, ...beyondTier3].filter((d) => !condensingSet.has(d) && !arSingles.has(d))
+  ).reverse()
+
   // The splice rewrites one contiguous region, from the newest heading that
   // changes down to (exclusive) the first heading below the LAST one that changes.
   // Dates that stay put can sit inside that span — an existing Tier-2 entry is
@@ -324,6 +427,14 @@ function planTiers(clText, arText, today) {
     .slice(0, lastChanged + 1)
     .filter((h) => !changedSummaryKeys.has(h.key))
     .map((h) => h.text)
+
+  // Legacy no-date blocks the region swallows — the run re-emits them itself.
+  let legacyInRegion = []
+  if (clStart !== null) {
+    const i = clText.indexOf(clStart)
+    const j = clText.indexOf(clEnd)
+    if (i !== -1 && j > i) legacyInRegion = legacyBlocksIn(clText.slice(i, j)).map((b) => b.heading)
+  }
 
   // Archive anchor: insert above the newest existing entry, or above the seeded
   // placeholder line on the very first Tier-3 run.
@@ -355,11 +466,14 @@ function planTiers(clText, arText, today) {
     clStart,
     clEnd,
     reEmit,
+    autoArchive,
+    needArContent,
+    legacyInRegion,
     // The sentinel is inside the rewritten region whenever the region starts at a
     // full-detail `## DATE` heading, so cl-mid has to re-open the summary section.
     spliceIncludesSentinel: clStart !== null && clStart.startsWith("## "),
     arBefore,
-    needsArchive: collapsing.length > 0 || beyondTier3.length > 0,
+    needsArchive: needArContent.length > 0,
     dropRangesBefore: tier3From,
     shedYear,
     archiveLines: arLines,
@@ -417,10 +531,25 @@ function formatPlan(p, args) {
     if (p.collapsing.length)
       out.push(`  - new '### X to Y' week-range summaries covering ${list(p.collapsing)}`)
     out.push(`  ...newest first throughout.`)
+    out.push(
+      `Carry each entry's **bold subject**, anchor-file links, and issue/PR refs into the ` +
+        `summaries — they are what future greps find.`
+    )
+    if (p.autoArchive.length)
+      out.push(
+        `The run moves the full-detail blocks for ${list(p.autoArchive)} into the archive ` +
+          `verbatim itself — do not re-type them in cl-mid or ar-new.md.`
+      )
+    if (p.legacyInRegion.length)
+      out.push(
+        `Legacy block(s) inside the region (${p.legacyInRegion.join(", ")}) are re-emitted by ` +
+          `the run automatically — leave them out of cl-mid.`
+      )
     if (p.needsArchive)
       out.push(
-        `Write /tmp/ar-new.md: per-day detail for ${list(p.collapsing.concat(p.beyondTier3))}, ` +
-          `newest first, each followed by a '---' line.`
+        `Write /tmp/ar-new.md: per-day detail for ${list(p.needArContent)} (the changelog holds ` +
+          `only their summaries — the pre-1.1 flow discarded the detail), newest first, each ` +
+          `followed by a '---' line.`
       )
     out.push("")
   }
@@ -684,8 +813,9 @@ function main() {
 
   // --- Check A + Tier-2/3 splice (optional) ---
   let newCl = oldCl
+  let removedDayBlocks = []
   if (haveSplice) {
-    const mid = readFileSync(args.clMid, "utf8")
+    let mid = readFileSync(args.clMid, "utf8")
     const nStart = countOccurrences(oldCl, args.clStart)
     const nEnd = countOccurrences(oldCl, args.clEnd)
     if (nStart !== 1)
@@ -694,7 +824,19 @@ function main() {
     if (!fails.length && oldCl.indexOf(args.clStart) >= oldCl.indexOf(args.clEnd))
       fails.push("A: --cl-start does not precede --cl-end")
     if (fails.length) return abort(fails)
-    newCl = spliceReplace(oldCl, args.clStart, args.clEnd, mid)
+
+    const i = oldCl.indexOf(args.clStart)
+    const j = oldCl.indexOf(args.clEnd)
+    const region = oldCl.slice(i, j)
+    // Legacy no-date blocks the region swallows are re-emitted here, above the
+    // new content, so the model never re-types an opaque history — unless
+    // cl-mid already carries the heading, in which case Check K verifies that
+    // copy is complete instead.
+    const reEmit = legacyBlocksIn(region).filter((b) => !mid.includes(b.heading))
+    if (reEmit.length) mid = reEmit.map((b) => `${b.text}\n\n---\n\n`).join("") + mid
+    newCl = oldCl.slice(0, i) + mid + oldCl.slice(j)
+    const kept = h2Dates(newCl)
+    removedDayBlocks = dayBlocksIn(region).filter((b) => !kept.has(b.date))
   }
 
   // --- Archive splice (optional) ---
@@ -715,6 +857,46 @@ function main() {
     }
     const k = oldAr.indexOf(args.arBefore)
     newAr = oldAr.slice(0, k) + arContent + oldAr.slice(k)
+  }
+
+  // --- Verbatim auto-archive of removed full-detail days (Check J) ---
+  // The archive, not git archaeology, is where a grep for old detail lands — so
+  // the detail moves there byte-for-byte the moment it leaves Tier 1. The model
+  // never re-types it and never summarizes it away.
+  let autoArchived = []
+  if (removedDayBlocks.length) {
+    const already = singleDates(newAr)
+    for (const date of uniqSorted(removedDayBlocks.map((b) => b.date))) {
+      if (already.has(date))
+        fails.push(
+          `J: full-detail day '${date}' leaving the changelog already has an archive entry - ` +
+            `the run archives removed days verbatim itself; remove '### ${date}' from --ar-content`
+        )
+    }
+    if (fails.length) return abort(fails)
+
+    // Same-date blocks (legacy duplicates) merge under one canonical heading; a
+    // legacy heading's trailing text is kept as an italic note line above its
+    // block, so nothing greppable is lost when the heading canonicalizes.
+    const byDate = new Map()
+    for (const b of removedDayBlocks) {
+      if (!byDate.has(b.date)) byDate.set(b.date, [])
+      if (b.trailing) byDate.get(b.date).push(`_${b.trailing}_`)
+      byDate.get(b.date).push(b.body.join("\n"))
+    }
+    autoArchived = [...byDate.keys()] // region order — newest first
+    newAr = insertIntoArchive(
+      newAr,
+      autoArchived.map((d) => `### ${d}\n\n${byDate.get(d).join("\n\n")}\n\n---\n\n`).join("")
+    )
+    for (const b of removedDayBlocks) {
+      for (const l of b.body) {
+        if (l.trim() === "" || /^-{3,}\s*$/.test(l)) continue
+        if (!newAr.includes(l))
+          fails.push(`J: auto-archive lost a line of '${b.date}': ${JSON.stringify(l.slice(0, 60))}`)
+      }
+    }
+    if (fails.length) return abort(fails)
   }
 
   // --- Archive year shed (optional, Check I) ---
@@ -787,14 +969,42 @@ function main() {
     fails.push("F: missing '---' separator immediately before '## Earlier Changes (Summary)'")
   if (!newCl.includes(FOOTER)) fails.push("G: missing footer pointer to changelog-archive.md")
 
+  // --- Check K (legacy blocks with no ISO date survive any splice) ---
+  if (haveSplice) {
+    const lineCount = (text, line) => text.split("\n").filter((x) => x === line).length
+    for (const b of legacyBlocksIn(oldCl)) {
+      const before = lineCount(oldCl, b.heading)
+      const after = lineCount(newCl, b.heading)
+      if (after !== before) {
+        fails.push(
+          `K: legacy heading '${b.heading}' appears ${after}x in the new changelog ` +
+            `(${before}x before) - the run re-emits legacy blocks itself; don't ` +
+            `${after > before ? "repeat" : "remove"} them in --cl-mid`
+        )
+        continue
+      }
+      for (const l of b.body) {
+        if (l.trim() === "" || /^-{3,}\s*$/.test(l)) continue
+        if (!newCl.includes(l))
+          fails.push(
+            `K: legacy block '${b.heading}' lost line ${JSON.stringify(l.slice(0, 60))} - ` +
+              `copy legacy blocks verbatim or leave them out of --cl-mid entirely`
+          )
+      }
+    }
+  }
+
   if (fails.length) return abort(fails)
 
   // --- Report ---
   const lineCount = (s) => s.split("\n").length
   console.log("All checks passed.")
   console.log(`  changelog: ${lineCount(oldCl)} -> ${lineCount(newCl)} lines`)
-  if (doArchive) {
+  if (doArchive || autoArchived.length)
     console.log(`  archive:   ${lineCount(oldAr)} -> ${lineCount(newAr)} lines`)
+  if (autoArchived.length)
+    console.log(`  archived ${autoArchived.length} full-detail day(s) verbatim: ${autoArchived.join(", ")}`)
+  if (doArchive) {
     console.log(`  archived ${removed.length} collapsed date(s): ${removed.sort().join(", ") || "(none)"}`)
   }
   if (dropped.length) {
@@ -815,7 +1025,7 @@ function main() {
   }
 
   writeFileSync(args.changelog, newCl)
-  if (doArchive || shed) writeFileSync(args.archive, newAr)
+  if (doArchive || shed || autoArchived.length) writeFileSync(args.archive, newAr)
   if (shed) writeFileSync(shed.yearPath, shed.yearText)
   console.log("Written.")
   return 0

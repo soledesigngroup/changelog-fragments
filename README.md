@@ -35,7 +35,9 @@ pattern, adapted for agent-written history.
 
 A second step, **condense**, ages entries down through four tiers (full detail → per-day summary →
 week-range → archive-only) so `changelog.md` stays a fixed rolling window instead of an ever-growing
-file that every session pays to read.
+file that every session pays to read. Summarization never destroys the original text: the moment a
+day leaves the full-detail window, its block moves into `docs/changelog-archive.md` **byte-for-byte**,
+so old history stays greppable at original fidelity.
 
 ## What it looks like
 
@@ -125,6 +127,20 @@ npm run changelog:fold -- --check
 Only one fold can run at a time: it takes an exclusive lock and a second invocation exits rather than
 racing, so "run it when the tree is quiet" is enforced rather than merely advised.
 
+## Searching history
+
+Recent history is `docs/changelog.md` **plus any fragments not yet folded**; everything older lives
+verbatim in `docs/changelog-archive.md` (and, once years are shed, `docs/changelog-archive-<YYYY>.md`).
+One grep covers every entry ever written, at full original detail:
+
+```bash
+grep -rn "<term>" docs/changelog.md docs/changelog.d/ docs/changelog-archive*.md
+```
+
+Summaries in `changelog.md` carry each entry's bold subject, anchor-file links, and issue/PR refs
+through every tier, so even the condensed view stays greppable by the things you actually search
+for — a filename, a feature name, a `#123`.
+
 ## Adopting a repo that already has a changelog
 
 `install.mjs` migrates an existing `docs/changelog.md` into the layout the tooling needs. The
@@ -162,12 +178,19 @@ heading outside the six canonical categories, text above the first `### Category
 folded late (a session that crossed midnight, a branch merged after a fold) still lands below newer
 entries instead of on top of them.
 
+**The archive holds full detail, verbatim.** The moment a day ages out of the 0–3 day window, the
+condense helper moves its full-detail block into `docs/changelog-archive.md` byte-for-byte — the
+model writes the summary that stays in `changelog.md`, but it never re-types (or gets to paraphrase
+away) the detail. Summaries are an index over the archive, not a replacement for it, so a grep over
+`docs/` finds every entry ever folded, exactly as authored, no git archaeology required.
+
 **The condense helper does the mechanics, the model does the judgment.** The model writes the summary
-prose to temp files; the script performs the splice and runs nine structural checks (anchors
+prose to temp files; the script performs the splice and runs eleven structural checks (anchors
 unambiguous and ordered, no duplicate headings, nothing collapsed without being archived, the 0–3 day
 window untouched, no per-day heading covered by a week-range, separator and footer preserved, Tier-4
-drops only fully-archived week-ranges, and a year shed that conserves every heading and line).
-**It writes nothing unless every check passes.**
+drops only fully-archived week-ranges, a year shed that conserves every heading and line, a verbatim
+auto-archive that conserves every line, and legacy no-date blocks — a migrated Keep a Changelog
+history — surviving any splice). **It writes nothing unless every check passes.**
 
 **The model isn't asked to do date arithmetic.** `--plan --today <DATE>` classifies every heading into
 its tier and prints the exact anchors and cutoffs to pass — including whether the archive is due to
@@ -213,7 +236,7 @@ that are load-bearing, so read that before changing behavior.
 
 Releases are tagged and noted in [CHANGELOG.md](CHANGELOG.md); each entry says whether re-running
 `install.mjs` over an existing installation is safe. Pin a version with
-`npx degit soledesigngroup/changelog-fragments#v1.0.1`.
+`npx degit soledesigngroup/changelog-fragments#v1.1.0`.
 
 ## License
 

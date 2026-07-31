@@ -47,7 +47,7 @@ group whose fixture they need rather than at the end of the file.
 
 Tests install into throwaway `mkdtemp` dirs and shell out to the real scripts, so a template edit is
 covered end-to-end without a separate fixture to update. Failing paths matter as much as happy ones:
-every condense check (A–I) has a test that makes it fire, and `assertCheckFails` asserts the specific
+every condense check (A–K) has a test that makes it fire, and `assertCheckFails` asserts the specific
 check ID, because a bare "it exited non-zero" also passes when the script has a syntax error.
 
 ## Invariants
@@ -73,6 +73,14 @@ via `wx` (atomic create-or-fail, reclaimed if the holder pid is gone) and writes
 a temp file + `renameSync`. Fragment deletion uses `force: true` so an interrupted run is re-runnable
 instead of an ENOENT crash. Serializing the fold by convention was the last live instance of the race
 the whole system exists to remove.
+
+**A refold can't duplicate, and same-day categories merge.** Fragment deletion happens after the
+atomic changelog write, so a fold killed between the two leaves already-folded fragments on disk;
+the next run recognizes a fragment whose every line already sits under its day and deletes it
+instead of folding it twice. A late fragment for an existing day merges bullet-by-bullet into that
+day's existing `### Category` sections (a missing category is inserted in canonical position) —
+appending whole blocks used to leave two `### Fixed` sections under one day, which `auditChangelog`
+now also flags.
 
 **The direct-invocation guard compares filesystem paths, never URL strings.** `invokedDirectly()` tests
 `resolve(process.argv[1])`/`realpathSync(...)` against `fileURLToPath(import.meta.url)`. The obvious
@@ -106,11 +114,21 @@ whole file — with `--check` reporting "structure intact". Only the rule's inse
 legacy zone stays opaque, because repointing `firstDay` there makes the day-block loop throw on the
 content above it.
 
-**The condense helper writes nothing unless checks A–I pass.** `template/scripts/condense-changelog.mjs`
+**The condense helper writes nothing unless checks A–K pass.** `template/scripts/condense-changelog.mjs`
 does the mechanical splice; the *model* supplies the summary prose via temp files. Verification isn't
 skippable and has no `--force`. If you add an operation, add its check. `--plan` is the read-only
 counterpart: it computes the tier boundaries and anchors so the model never has to, and it must stay
 side-effect-free.
+
+**Summarization never destroys detail — the script moves it, verbatim.** Every full-detail `## DATE`
+block the splice removes is auto-archived byte-for-byte as a `### DATE` archive entry (Check J: no
+collision with an existing archive entry, every line conserved; a legacy heading's trailing text
+survives as an italic note). Legacy `##` blocks with no ISO date (`## [Unreleased]`, `## [1.2.0]`)
+that the region swallows are re-emitted above the new content by the script itself (Check K: heading
+count and content lines conserved) — before this, a condense on a migrated Keep-a-Changelog file
+would have silently deleted the whole legacy history, since the model was never told those blocks
+were inside the region. `--ar-content` is transition-only now: `--plan` requests it solely for
+summary-section dates collapsing whose detail was never archived (pre-1.1 condense flows).
 
 **Dates are ISO strings, compared lexicographically.** No `Date` object, no timezone handling, no
 arithmetic — with exactly one carve-out: `shiftDays()` in `condense-changelog.mjs`, which `--plan` uses
@@ -174,5 +192,6 @@ Nothing else may write these; a hand-edit is a bug, not a shortcut:
 `collect-changelog.mjs --check` is what makes this ownership more than a docstring: it fails on a
 Tier-1 zone that isn't in descending date order, a zone whose opening `---` sits *below* a `##`
 heading (the boundary is then under entries that belong inside it, so folds land mid-file), a
-duplicated `## DATE`, a missing sentinel or footer, or a pending fragment the fold would refuse. Wire it into CI or a pre-commit hook in target repos.
+duplicated `## DATE`, duplicate `### Category` sections within one day block, a missing sentinel or
+footer, or a pending fragment the fold would refuse. Wire it into CI or a pre-commit hook in target repos.
 Repeated *legacy* day headings are exempt — the migrator preserves those deliberately.

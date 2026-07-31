@@ -42,6 +42,9 @@ The diff's full story already lives in git — the changelog is the **index**, n
 - **1–2 sentences per entry.** If you need more, the detail belongs in a guide, commit body, or audit doc — link to it instead.
 - **Lead with the change, not the story.** Bold a short subject, then say what changed and why in the same breath.
 - **Name the anchor file(s)** — the one or two paths a reader would open — nothing more. Don't enumerate every touched file.
+- **Append an issue/PR ref when one exists** — `(#123)` at the end of the bullet. It's the one
+  identifier that survives every summarization tier and links the entry back to its full context
+  forever; skip it when there is no issue or PR (don't invent one).
 - **No verification noise.** Never include build/lint/typecheck output, test counts, "0 errors", "browser-verified", or "green". Passing checks are table stakes, not news.
 - **No blow-by-blow narratives** ("logged into a throwaway session… the lone console 403 was…"). That's PR-review evidence — put it in the commit body.
 - **No re-explaining mechanics** the guide already documents. A behavior change is news; the internals aren't.

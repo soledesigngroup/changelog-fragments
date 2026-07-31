@@ -32,7 +32,10 @@
  *
  * Only one fold runs at a time (an exclusive `.fold.lock` in the fragment dir), and
  * changelog.md is written through a temp file + rename, so a killed fold leaves the
- * tree either untouched or fully folded — never half-way.
+ * changelog either untouched or fully folded — never half-way. Fragment deletion
+ * happens after that write; a fold killed between the two leaves already-folded
+ * fragments on disk, and the next run recognizes them (every line already sits
+ * under their day) and deletes them instead of folding them in twice.
  *
  * Paths are resolved relative to this script's parent directory, not the process
  * cwd, so the fold behaves identically from a subdirectory or a git hook.
@@ -167,8 +170,64 @@ function tier1Bounds(lines) {
   return { start, end }
 }
 
-/** Splice one day's rendered blocks into (or onto) the Tier-1 zone. */
-function spliceDate(lines, date, dayLines) {
+/** The canonical label of a `### Category` line, or null. */
+function categoryOf(line) {
+  const m = line.match(CATEGORY_RE)
+  return m ? CATEGORY_LABEL.get(m[1].toLowerCase()) : null
+}
+
+/**
+ * Merge one day's categories into the lines of an EXISTING day block (everything
+ * below its `## DATE` heading, trailing `---` included). Bullets for a category
+ * the day already has are appended to that section; a category the day lacks is
+ * inserted in canonical position among the sections already there. Appending
+ * whole blocks instead used to leave a second `### Fixed` under the same day —
+ * a duplicate heading, out of canonical order — whenever a fragment folded late.
+ */
+function mergeIntoExistingDay(regionLines, cats) {
+  const out = [...regionLines]
+  const isHeading = (l) => /^#{2,3}\s/.test(l)
+
+  const findCategory = (label) => out.findIndex((l) => categoryOf(l) === label)
+  /** Index of the section's last content line (bullets end before the next heading/rule). */
+  const sectionLastContent = (idx) => {
+    let last = idx
+    for (let i = idx + 1; i < out.length; i++) {
+      if (isHeading(out[i]) || HR_RE.test(out[i])) break
+      if (out[i].trim() !== "") last = i
+    }
+    return last
+  }
+  const dayLastContent = () => {
+    let last = -1
+    for (let i = 0; i < out.length; i++) {
+      if (out[i].trim() !== "" && !HR_RE.test(out[i])) last = i
+    }
+    return last
+  }
+
+  for (const label of CATEGORY_ORDER) {
+    const raw = cats.get(label)
+    if (!raw || raw.length === 0) continue
+    const at = findCategory(label)
+    if (at !== -1) {
+      out.splice(sectionLastContent(at) + 1, 0, ...raw)
+      continue
+    }
+    // New section → before the first existing canonical section that sorts later,
+    // or after the day's last content when nothing does (legacy content included).
+    const later = out.findIndex((l) => {
+      const c = categoryOf(l)
+      return c !== null && CATEGORY_ORDER.indexOf(c) > CATEGORY_ORDER.indexOf(label)
+    })
+    if (later === -1) out.splice(dayLastContent() + 1, 0, "", `### ${label}`, ...raw)
+    else out.splice(later, 0, `### ${label}`, ...raw, "")
+  }
+  return out
+}
+
+/** Splice one day's merged categories into (or onto) the Tier-1 zone. */
+function spliceDate(lines, date, cats) {
   const { start, end } = tier1Bounds(lines)
 
   // Does a `## <date>` section already exist in Tier-1?
@@ -194,11 +253,11 @@ function spliceDate(lines, date, dayLines) {
         break
       }
     }
-    const block = [`## ${date}`, "", ...dayLines, "", "---", ""]
+    const block = [`## ${date}`, "", ...renderDayLines(cats), "", "---", ""]
     return [...lines.slice(0, insertAt), ...block, ...lines.slice(insertAt)]
   }
 
-  // Existing day → append after its last bullet, before any trailing `---`/blanks.
+  // Existing day → merge category-by-category into the sections already there.
   let dayEnd = end
   for (let i = dayIdx + 1; i < end; i++) {
     if (DAY_HEADING_RE.test(lines[i])) {
@@ -206,12 +265,8 @@ function spliceDate(lines, date, dayLines) {
       break
     }
   }
-  let lastContent = dayIdx
-  for (let i = dayIdx + 1; i < dayEnd; i++) {
-    if (lines[i].trim() !== "" && !HR_RE.test(lines[i])) lastContent = i
-  }
-  const insertAt = lastContent + 1
-  return [...lines.slice(0, insertAt), "", ...dayLines, ...lines.slice(insertAt)]
+  const merged = mergeIntoExistingDay(lines.slice(dayIdx + 1, dayEnd), cats)
+  return [...lines.slice(0, dayIdx + 1), ...merged, ...lines.slice(dayEnd)]
 }
 
 /**
@@ -237,7 +292,7 @@ export function mergeFragmentsIntoChangelog(changelogMd, fragments) {
   let lines = changelogMd.split("\n")
   // Insert ascending so that after each top-insert the newest date sits on top.
   for (const date of [...byDate.keys()].sort()) {
-    lines = spliceDate(lines, date, renderDayLines(byDate.get(date)))
+    lines = spliceDate(lines, date, byDate.get(date))
   }
   return lines.join("\n")
 }
@@ -279,6 +334,26 @@ export function auditChangelog(changelogMd) {
   }
   for (const [date, at] of [...byDate].sort()) {
     if (at.length > 1) problems.push(`duplicate day heading '## ${date}' (lines ${at.join(", ")})`)
+  }
+
+  // Duplicate category sections within one day block: the fold merges same-day
+  // fragments into one section per category, so a second '### Fixed' under the
+  // same day heading is a hand-edit or an interrupted pre-1.1 fold.
+  for (let i = start; i < end; i++) {
+    if (!DAY_HEADING_RE.test(lines[i]) || !DAY_DATE_RE.test(lines[i])) continue
+    const seen = new Map()
+    for (let j = i + 1; j < end && !DAY_HEADING_RE.test(lines[j]); j++) {
+      const m = lines[j].match(CATEGORY_RE)
+      if (!m) continue
+      const label = CATEGORY_LABEL.get(m[1].toLowerCase())
+      seen.set(label, (seen.get(label) ?? []).concat(j + 1))
+    }
+    for (const [label, at] of seen) {
+      if (at.length > 1)
+        problems.push(
+          `duplicate '### ${label}' sections under '${lines[i].trim()}' (lines ${at.join(", ")})`
+        )
+    }
   }
 
   // The zone's top boundary is the FIRST `---` in the file. A `##` heading above
@@ -412,6 +487,25 @@ function readFragments() {
 const bulletCount = (blocks) =>
   blocks.reduce((sum, b) => sum + b.rawLines.filter((l) => l.trim().startsWith("- ")).length, 0)
 
+/**
+ * Every content line already sitting under a Tier-1 day heading for `date`
+ * (all same-date blocks, legacy headings included). Used to recognize a
+ * fragment whose bullets a previous — interrupted — fold already moved in: the
+ * changelog write is atomic but the fragment deletions after it are not, so a
+ * fold killed between the two leaves fragments on disk whose content is
+ * already in the file, and refolding them would silently duplicate entries.
+ */
+function foldedDayContent(clLines, date) {
+  const { start, end } = tier1Bounds(clLines)
+  const have = new Set()
+  let inDay = false
+  for (let i = start; i < end; i++) {
+    if (DAY_HEADING_RE.test(clLines[i])) inDay = clLines[i].match(DAY_DATE_RE)?.[1] === date
+    else if (inDay) have.add(clLines[i])
+  }
+  return have
+}
+
 function runFold({ dryRun }) {
   requireFragmentDir()
 
@@ -422,11 +516,30 @@ function runFold({ dryRun }) {
 
   if (!dryRun) acquireLock()
   try {
-    const { fragments, skipped } = readFragments()
+    const { fragments: readable, skipped } = readFragments()
 
     for (const { name, reason } of skipped) {
       console.warn(`[collect-changelog] skip ${name}: ${reason}`)
     }
+
+    const changelogMd = readFileSync(changelogPath, "utf8")
+    const clLines = changelogMd.split("\n")
+    const fragments = []
+    for (const f of readable) {
+      const content = f.blocks.flatMap((b) => b.rawLines).filter((l) => l.trim() !== "")
+      const have = foldedDayContent(clLines, f.date)
+      if (content.length && content.every((l) => have.has(l))) {
+        console.warn(
+          `[collect-changelog] ${f.name}: every line already sits under its day in ` +
+            `${CHANGELOG_PATH} — ${dryRun ? "would delete" : "deleting"} the fragment ` +
+            `(recovering an interrupted fold) instead of folding it twice`
+        )
+        if (!dryRun) rmSync(f.path, { force: true })
+        continue
+      }
+      fragments.push(f)
+    }
+
     for (const f of fragments) {
       const n = bulletCount(f.blocks)
       console.log(
@@ -440,7 +553,7 @@ function runFold({ dryRun }) {
       return skipped.length ? 1 : 0
     }
 
-    const merged = mergeFragmentsIntoChangelog(readFileSync(changelogPath, "utf8"), fragments)
+    const merged = mergeFragmentsIntoChangelog(changelogMd, fragments)
 
     if (dryRun) {
       console.log(

@@ -19,8 +19,16 @@ collision structurally impossible.
    changelog structure without writing anything.
 
 Entries are a **scannable index of history**, not PR descriptions: 1–2 sentences each (Security may
-run to ~3), name the one or two anchor files, and no verification noise (build/lint/test output,
-"0 errors", "green"). Depth goes to the commit body, an audit doc under `docs/audits/`, or the
-relevant `guides/` doc — link, don't retell.
+run to ~3), name the one or two anchor files, append the issue/PR ref when one exists (`(#123)`),
+and no verification noise (build/lint/test output, "0 errors", "green"). Depth goes to the commit
+body, an audit doc under `docs/audits/`, or the relevant `guides/` doc — link, don't retell.
+
+**Searching change history**: recent history is `docs/changelog.md` **plus any pending fragments**
+in `docs/changelog.d/`; older full detail lives verbatim in `docs/changelog-archive*.md`. One
+command covers all of it:
+
+```bash
+grep -rn "<term>" docs/changelog.md docs/changelog.d/ docs/changelog-archive*.md
+```
 
 See `docs/changelog.d/README.md` for the full mechanics.

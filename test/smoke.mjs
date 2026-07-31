@@ -363,6 +363,29 @@ group("folding fragments", () => {
     assert.equal(cl.split("\n").filter((l) => l === "## 2026-07-26").length, 1)
     assert.ok(cl.includes("- **Fix one** — details."))
     assert.ok(cl.includes("- **Fix two** — details."))
+    // ...into the existing sections: one "### Fixed" holding both bullets, still
+    // in canonical order — not a second Fixed block appended after the day.
+    assert.equal(cl.split("\n").filter((l) => l === "### Fixed").length, 1)
+    assert.ok(cl.indexOf("### Added") < cl.indexOf("### Fixed"))
+    assert.ok(cl.indexOf("- **Fix one**") < cl.indexOf("- **Fix two**"))
+  })
+
+  test("a fragment already folded by an interrupted run is deleted, not folded twice", () => {
+    // The changelog write is atomic but fragment deletion happens after it — a
+    // fold killed between the two leaves this exact state behind.
+    fragment(repo, "2026-07-26-interrupted-d4e5.md", "### Fixed\n- **Fix interrupted** — once.\n")
+    fold(repo)
+    fragment(repo, "2026-07-26-interrupted-d4e5.md", "### Fixed\n- **Fix interrupted** — once.\n")
+    const r = foldAttempt(repo)
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /recovering an interrupted fold/)
+    assert.ok(!existsSync(join(repo, "docs/changelog.d/2026-07-26-interrupted-d4e5.md")))
+    const cl = read(repo, "docs/changelog.md")
+    assert.equal(
+      cl.split("\n").filter((l) => l.includes("**Fix interrupted**")).length,
+      1,
+      "the bullet must not be duplicated by the refold"
+    )
   })
 
   test("bullet text is copied byte-for-byte", () => {
@@ -538,6 +561,19 @@ group("fold --check", () => {
     write(repo, "docs/changelog.md", cl)
   })
 
+  test("duplicate category sections under one day fail the check", () => {
+    const cl = read(repo, "docs/changelog.md")
+    write(
+      repo,
+      "docs/changelog.md",
+      cl.replace("### Added", "### Added\n- first section\n\n### Added")
+    )
+    const r = foldAttempt(repo, ["--check"])
+    assert.equal(r.status, 1)
+    assert.match(r.out, /duplicate '### Added' sections under '## 2026-07-26'/)
+    write(repo, "docs/changelog.md", cl)
+  })
+
   test("a Tier-1 zone that opens below the history fails the check", () => {
     // What a pre-1.0.1 migration of a Keep a Changelog file produced: the header
     // rule at the bottom, so the boundary sits under entries that belong above it.
@@ -689,6 +725,18 @@ group("condense --plan", () => {
     assert.match(r.out, /--ar-before '### 2026-06-07'/)
   })
 
+  test("separates auto-archived days from the --ar-content the old flow left behind", () => {
+    const r = condense(repo, [...CL_AR, "--plan", "--today", "2026-07-26"])
+    // 07-20 and 07-18 leave Tier 1 — the run moves their detail verbatim itself.
+    assert.match(
+      r.out,
+      /moves the full-detail blocks for 2026-07-20, 2026-07-18 into the archive verbatim itself/
+    )
+    // 07-05 and 07-02 are old-flow summaries with no archived detail — only they
+    // need model-written --ar-content.
+    assert.match(r.out, /ar-new\.md: per-day detail for 2026-07-05, 2026-07-02/)
+  })
+
   test("the printed command is safe to paste into a shell", () => {
     // The seeded archive placeholder contains backticks; an anchor carrying them
     // unquoted would command-substitute when pasted.
@@ -800,11 +848,28 @@ Early July theme summary.
     const ar = read(repo, "docs/changelog-archive.md")
     assert.ok(ar.indexOf("### 2026-07-05") < ar.indexOf("### 2026-06-07"), "archive newest-first")
     assert.ok(ar.includes("### 2026-07-02"))
+
+    // The days that left Tier 1 were moved into the archive by the run itself,
+    // byte-for-byte and above everything older — no model retyping involved.
+    assert.match(ar, /^### 2026-07-20$/m, "auto-archived per-day entry")
+    assert.match(ar, /^### 2026-07-18$/m, "auto-archived per-day entry")
+    assert.ok(ar.includes("- **Six days ago** — z."), "verbatim detail in the archive")
+    assert.ok(ar.includes("- **Eight days ago** — w."), "verbatim detail in the archive")
+    assert.ok(ar.indexOf("### 2026-07-20") < ar.indexOf("### 2026-07-05"), "newest first")
   })
 
   test("the post-condense file still passes fold --check", () => {
     const r = foldAttempt(repo, ["--check"])
     assert.equal(r.status, 0, r.out)
+  })
+
+  test("a later plan only asks --ar-content for dates the old flow left unarchived", () => {
+    // After the run above, 07-20/07-18 have verbatim archive entries; 07-14 is an
+    // old-flow summary whose detail was never archived. All three now collapse.
+    const r = condense(repo, [...CL_AR, "--plan", "--today", "2026-08-10"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /ar-new\.md: per-day detail for 2026-07-14 /, r.out)
+    assert.doesNotMatch(r.out, /ar-new\.md: per-day detail for [^\n]*2026-07-20/, r.out)
   })
 })
 
@@ -880,10 +945,48 @@ Early July theme summary.
     const cl = read(dir, "docs/changelog.md")
     assert.ok(!cl.includes("(DocuSeal implementation plan)"), "legacy heading is gone")
     assert.match(cl, /^### 2026-07-20$/m, "and came back as a canonical Tier-2 entry")
+    // Its full detail moved to the archive verbatim, parenthetical included
+    // (canonical heading + italic note, so nothing greppable is lost).
+    const ar = read(dir, "docs/changelog-archive.md")
+    assert.match(ar, /^### 2026-07-20$/m)
+    assert.ok(ar.includes("_(DocuSeal implementation plan)_"), ar.slice(0, 400))
+    assert.ok(ar.includes("- **Six days ago** — z."), "verbatim detail")
     assert.equal(foldAttempt(dir, ["--check"]).status, 0)
   })
 
-  test("Check C catches a legacy day dropped without being archived", () => {
+  test("two same-date legacy blocks merge under one verbatim archive entry", () => {
+    const dir = midlifeRepo()
+    write(
+      dir,
+      "docs/changelog.md",
+      MIDLIFE_CL.replace(
+        "## 2026-07-20\n",
+        "## 2026-07-20 (provider decision)\n\n### Changed\n- **Same day, twice** — q.\n\n---\n\n## 2026-07-20 (retro)\n"
+      )
+    )
+    write(
+      dir,
+      "cl-mid.md",
+      "## Earlier Changes (Summary)\n\n### 2026-07-20\n- merged summary.\n\n### 2026-07-18\n- s.\n\n### 2026-07-14\n- **Twelve days ago** — still Tier 2.\n\n"
+    )
+    const r = condense(dir, [
+      ...CL_AR,
+      "--cl-start", "## 2026-07-20 (provider decision)",
+      "--cl-end", "### 2026-07-05",
+      "--cl-mid", "cl-mid.md",
+      "--keep-detailed-since", "2026-07-23",
+    ])
+    assert.equal(r.status, 0, r.out)
+    const ar = read(dir, "docs/changelog-archive.md")
+    assert.equal(ar.split("\n").filter((l) => l === "### 2026-07-20").length, 1, ar)
+    assert.ok(ar.includes("_(provider decision)_") && ar.includes("_(retro)_"))
+    assert.ok(ar.includes("- **Same day, twice** — q.") && ar.includes("- **Six days ago** — z."))
+  })
+
+  test("Check C still catches an old-flow summary dropped without being archived", () => {
+    // The legacy full-detail day is auto-archived now, but the summary-section
+    // dates the region swallows (07-14, 07-05, 07-02) vanish with no archive
+    // entry — exactly what Check C exists to refuse.
     const dir = legacyRepo("## 2026-07-20 (retro)")
     write(dir, "cl-mid.md", "## Earlier Changes (Summary)\n\n")
     assertCheckFails(
@@ -895,6 +998,51 @@ Early July theme summary.
       ]),
       "C"
     )
+  })
+})
+
+group("condense preserves a migrated Keep-a-Changelog history", () => {
+  const repo = newRepo({ "docs/changelog.md": KEEP_A_CHANGELOG })
+  install(repo)
+  fragment(repo, "2026-07-20-feat-aaaa.md", "### Added\n- **New feature** — greppable one.\n")
+  fragment(repo, "2026-07-18-fix-bbbb.md", "### Fixed\n- **Old bug** — greppable two.\n")
+  fold(repo)
+
+  test("the plan names the legacy blocks the region swallows", () => {
+    const r = condense(repo, [...CL_AR, "--plan", "--today", "2026-07-31"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Legacy block\(s\) inside the region \(## \[Unreleased\], ## \[1\.2\.0\] - 2026-03-29, ## \[1\.1\.0\] - 2026-02-01\) are re-emitted by the run automatically/, r.out)
+  })
+
+  test("condensing re-emits the legacy history instead of deleting it", () => {
+    // Before the re-emit + Check K, this exact run — cl-mid written precisely as
+    // --plan instructs — silently deleted the whole bracketed history.
+    write(
+      repo,
+      "cl-mid.md",
+      "## Earlier Changes (Summary)\n\n### 2026-07-20\n- **New feature** — condensed. \n\n### 2026-07-18\n- **Old bug** — condensed.\n\n"
+    )
+    const r = condense(repo, [
+      ...CL_AR,
+      "--cl-start", "## 2026-07-20",
+      "--cl-end", "> Full per-day details available in",
+      "--cl-mid", "cl-mid.md",
+      "--keep-detailed-since", "2026-07-28",
+      "--drop-ranges-before", "2026-06-19",
+    ])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    for (const h of ["## [Unreleased]", "## [1.2.0] - 2026-03-29", "## [1.1.0] - 2026-02-01"]) {
+      assert.equal(cl.split("\n").filter((l) => l === h).length, 1, `${h} survives exactly once`)
+    }
+    assert.ok(cl.includes("- Widget rendering.") && cl.includes("- Crash on empty input."))
+    // Legacy blocks stay in the Tier-1 zone, above the summary sentinel.
+    assert.ok(cl.indexOf("## [Unreleased]") < cl.indexOf("## Earlier Changes (Summary)"))
+    // The aged-out days' detail sits verbatim in the archive.
+    const ar = read(repo, "docs/changelog-archive.md")
+    assert.ok(ar.includes("- **New feature** — greppable one."), ar)
+    assert.ok(ar.includes("- **Old bug** — greppable two."))
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
   })
 })
 
@@ -1027,6 +1175,60 @@ group("condense verification checks", () => {
         "--archive", "docs/changelog-archive.md",
       ]),
       "G"
+    )
+  })
+
+  test("J: an --ar-content entry colliding with an auto-archived day aborts", () => {
+    const repo = midlifeRepo()
+    // Old-habit archive content for a day the run now archives verbatim itself.
+    write(
+      repo,
+      "docs/changelog-archive.md",
+      MIDLIFE_AR.replace("### 2026-06-07", "### 2026-07-20\n- **Old-habit copy** — summary.\n\n### 2026-06-07")
+    )
+    write(
+      repo,
+      "cl-mid.md",
+      "## Earlier Changes (Summary)\n\n### 2026-07-20\n- s.\n\n### 2026-07-18\n- s.\n\n### 2026-07-14\n- **Twelve days ago** — still Tier 2.\n\n"
+    )
+    assertCheckFails(
+      condense(repo, [
+        ...CL_AR,
+        "--cl-start", "## 2026-07-20",
+        "--cl-end", "### 2026-07-05",
+        "--cl-mid", "cl-mid.md",
+        "--keep-detailed-since", "2026-07-23",
+      ]),
+      "J"
+    )
+  })
+
+  test("K: a legacy block re-typed incompletely in cl-mid aborts", () => {
+    const repo = midlifeRepo()
+    write(
+      repo,
+      "docs/changelog.md",
+      MIDLIFE_CL.replace(
+        "## Earlier Changes (Summary)",
+        "## [1.0.0] - 2026-05-01\n\n### Added\n- Legacy release notes.\n\n---\n\n## Earlier Changes (Summary)"
+      )
+    )
+    // cl-mid carries the legacy heading (so the script won't re-emit the block
+    // itself) but drops its body line — exactly the content loss K exists to stop.
+    write(
+      repo,
+      "cl-mid.md",
+      "## [1.0.0] - 2026-05-01\n\n---\n\n## Earlier Changes (Summary)\n\n### 2026-07-20\n- s.\n\n### 2026-07-18\n- s.\n\n### 2026-07-14\n- **Twelve days ago** — still Tier 2.\n\n"
+    )
+    assertCheckFails(
+      condense(repo, [
+        ...CL_AR,
+        "--cl-start", "## 2026-07-20",
+        "--cl-end", "### 2026-07-05",
+        "--cl-mid", "cl-mid.md",
+        "--keep-detailed-since", "2026-07-23",
+      ]),
+      "K"
     )
   })
 

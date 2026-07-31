@@ -16,13 +16,19 @@ Keep exactly as-is under `## YYYY-MM-DD` headings. **Never modify these.**
 
 ### Tier 2 — Per-day feature summary (4–14 days old)
 Condense each day to 1–2 lines per feature/change under a `### YYYY-MM-DD` heading inside the
-**"Earlier Changes (Summary)"** section. Preserve **bold** feature names and key technical details;
-group fixes and minor changes into single bullets.
+**"Earlier Changes (Summary)"** section. Preserve **bold** feature names, anchor-file links, and
+issue/PR refs — they are what future greps find; group fixes and minor changes into single bullets.
+**The script moves each day's full-detail block into `docs/changelog-archive.md` verbatim at the
+same time** (Check J), so the summary is an index, never the only copy — don't re-type detail into
+any file yourself.
 
 ### Tier 3 — Week-range summary (15–42 days old)
 Collapse per-day entries into `### YYYY-MM-DD to YYYY-MM-DD` headings in `changelog.md`, each with a
-1–2 line prose theme summary (**no bullet points**). Before collapsing, the full per-day Tier-2
-summary for each collapsed date moves to `docs/changelog-archive.md` (newest at top).
+1–2 line prose theme summary (**no bullet points**). The collapsed dates' full detail already sits in
+`docs/changelog-archive.md` — it moved there verbatim when they left Tier 1 — so normally nothing
+more moves. The exception is a changelog condensed under the pre-1.1 flow, where Tier-2
+summarization discarded the detail: `--plan` detects dates collapsing with no archive entry and asks
+for `--ar-content` for exactly those.
 
 ### Tier 4 — Archive-only (older than ~6 weeks / 42 days)
 Drop the Tier-3 week-range line from `changelog.md` **entirely** once its end date is older than the
@@ -70,15 +76,20 @@ prefer it over editing the files by hand.
    contains, newest first, exactly what `--plan` listed: the `## Earlier Changes (Summary)` heading
    (whenever the region starts at a `## DATE` block), the new Tier-2 per-day entries, **any existing
    entries the region swallows that this run doesn't change — copied verbatim**, then the new Tier-3
-   week-ranges.
+   week-ranges. Carry **bold subjects, anchor-file links, and issue/PR refs** into every summary.
    - **Check F requires the literal `---` + blank line immediately before that heading.** Every day
      block in `changelog.md` ends with a `---` separator, so the text preceding `--cl-start` normally
      supplies it. If it doesn't (e.g. `--cl-end` is the footer on an early run), start `cl-mid.md`
      with `---` + a blank line yourself.
-3. **If any dates collapse to Tier 3**, write their per-day summaries (newest first, each followed by
-   a `---` line) to a second temp file (e.g. `/tmp/ar-new.md`) for the archive.
-   - On the **first** Tier-3 run the archive has no date headings yet; `--plan` returns the placeholder
-     line at the bottom of `changelog-archive.md` as the `--ar-before` anchor.
+   - **Leave the full-detail blocks and any legacy no-date blocks out of `cl-mid.md`.** The script
+     archives the removed `## DATE` blocks verbatim itself (Check J), and re-emits any
+     `## [Unreleased]`-style legacy blocks the region swallows (Check K) — re-typing either would
+     duplicate them or lose content, and the checks refuse both.
+3. **Only if `--plan` asked for `--ar-content`** (dates collapsing whose detail was never archived —
+   a changelog condensed under the pre-1.1 flow), write their per-day summaries (newest first, each
+   followed by a `---` line) to a second temp file (e.g. `/tmp/ar-new.md`) for the archive.
+   - On the first such run the archive may have no date headings yet; `--plan` returns the
+     placeholder line at the bottom of `changelog-archive.md` as the `--ar-before` anchor.
 4. **Run the command `--plan` printed** (add `--dry-run` first to preview). Its shape:
    ```bash
    node scripts/condense-changelog.mjs \
@@ -92,7 +103,7 @@ prefer it over editing the files by hand.
       --ar-before "<newest existing archive heading>" \
       --ar-content /tmp/ar-new.md]
    ```
-   Omit the three `--ar-*` flags on runs where nothing has reached Tier 3. **Pass
+   Omit the three `--ar-*` flags unless `--plan` asked for them. **Pass
    `--drop-ranges-before <today − 42 days>` on every run** to age old week-ranges out (Tier 4) — the
    script computes which trailing ranges to drop and no-ops if none qualify. It reads `--archive` for
    the coverage check (read-only; nothing is written there), so keep `--archive docs/changelog-archive.md`
@@ -101,9 +112,10 @@ prefer it over editing the files by hand.
 
 The script enforces: anchors are unambiguous and ordered; no duplicate headings within a file; every
 date removed from the changelog is present as a per-day entry in the archive; the 0–3 day window
-stays full-detail (`--keep-detailed-since`); no per-day heading overlaps a week-range; and the `---`
-separator + archive footer are preserved. If it aborts, fix the temp files and re-run — don't
-hand-patch around it.
+stays full-detail (`--keep-detailed-since`); no per-day heading overlaps a week-range; the `---`
+separator + archive footer are preserved; the verbatim auto-archive conserves every line and never
+collides with an existing archive entry (Check J); and legacy no-date blocks survive any splice
+(Check K). If it aborts, fix the temp files and re-run — don't hand-patch around it.
 
 ## Archive size guard — shed completed years into per-year files
 
@@ -140,13 +152,19 @@ same run can't make each other look unsafe.
 ## Rules
 - **Get the boundaries from `--plan --today $(date +%F)`, not from your own date arithmetic.**
 - **Never modify the 0–3 day window.** `--keep-detailed-since` (set to today − 3 days) enforces this.
+- **Never re-type detail.** The script moves full-detail blocks into the archive verbatim itself;
+  your summaries are an index over that detail, not a replacement for it. Carry bold subjects,
+  anchor-file links, and issue/PR refs through every summary tier.
 - **Tier 4 only drops week-ranges, never per-day detail.** `--drop-ranges-before` removes trailing
   `### X to Y` blocks whose end date < cutoff and refuses (Check H) if a dropped range isn't still
   covered in the archive. The archive is the sole home for anything older than ~6 weeks — never delete
   the archived per-day entry a dropped week-range points at.
-- **Archive format is per-day** (`### YYYY-MM-DD`).
-- A collapsed date appears as a week-range in `changelog.md` **and** a per-day entry in the archive —
-  that cross-file pairing is correct, not a duplicate. Within a single file, no date may appear twice.
+- **Archive format is per-day** (`### YYYY-MM-DD`), holding the verbatim full-detail block of each
+  day that left Tier 1.
+- Cross-file pairing is correct, not a duplicate: a Tier-2 date appears as a summary in
+  `changelog.md` **and** as full detail in the archive; a collapsed date appears as a week-range in
+  `changelog.md` **and** a per-day entry in the archive. Within a single file, no date may appear
+  twice.
 - Keep `changelog-archive.md` in reverse-chronological order (newest at top).
 - **Shed completed years past ~2,000 lines** with `--shed-year` (see "Archive size guard") — never by
   hand. It's a pure partition; the only file `condense-changelog.mjs` keeps appending to is `changelog-archive.md`.

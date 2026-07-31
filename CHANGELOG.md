@@ -12,7 +12,67 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.0.1`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.1.0`.
+
+---
+
+## [1.1.0] — 2026-07-31
+
+The greppability release: summarization no longer destroys detail, and two fold defects that could
+silently duplicate or misfile entries are fixed. **Upgrade: recommended — re-run `install.mjs`. Safe
+on an existing installation**; an archive built under 1.0.x keeps working, and `--plan` detects the
+one transition case (see the note at the end).
+
+### Added
+
+- **The condense helper archives full detail verbatim, automatically** (Check J). The moment a
+  `## DATE` block leaves Tier 1, the script itself moves it byte-for-byte into
+  `docs/changelog-archive.md` as a `### DATE` entry — the model writes only the summary that stays in
+  `changelog.md` and never re-types (or paraphrases away) the detail. Until now the original text was
+  deleted at Tier 2 and the archive received only summaries at Tier 3, so anything older than ~4 days
+  was greppable only through git archaeology, and the archive's own "full per-day details" header was
+  wrong. Check J refuses a run whose `--ar-content` would collide with the auto-archive, and verifies
+  the move conserves every line. Same-date legacy blocks merge under one canonical heading; a legacy
+  heading's parenthetical survives as an italic note line.
+- **Interrupted folds are recovered, not refolded** (`scripts/collect-changelog.mjs`). The changelog
+  write is atomic but fragment deletion happens after it, so a fold killed between the two left
+  fragments on disk whose content was already in the file — and the next run folded them again,
+  silently duplicating entries. The fold now recognizes a fragment whose every line already sits
+  under its day and deletes it instead.
+- **`--check` flags duplicate `### Category` sections within one day block** — the layout the two
+  fold defects above used to produce, and a hand-edit smell either way.
+- **A documented one-liner for searching all history**, in the README and the `CLAUDE.md` snippet:
+  `grep -rn "<term>" docs/changelog.md docs/changelog.d/ docs/changelog-archive*.md`. Pending
+  fragments are part of recent history and the snippet now says so.
+- **Issue/PR refs in entries** — `/changelog-update` asks for `(#123)` at the end of a bullet when a
+  ref exists, and `/changelog-condense` + `--plan` instruct carrying bold subjects, anchor-file
+  links, and refs through every summary tier, so the condensed view stays greppable by the things
+  people actually search for.
+
+### Fixed
+
+- **A condense run can no longer delete a migrated Keep-a-Changelog history** (Check K). The splice
+  region routinely swallows the opaque legacy blocks (`## [Unreleased]`, `## [1.2.0]`) that sit at
+  the bottom of the Tier-1 zone, but `--plan` never told the model to re-emit them and no check
+  noticed their loss — an obedient model following the plan verbatim would have discarded the entire
+  legacy history, with "All checks passed". The script now re-emits those blocks itself, `--plan`
+  says so, and Check K verifies heading counts and content lines survive any splice.
+- **A late fragment folding into an existing day now merges into its `### Category` sections**
+  instead of appending duplicate ones out of canonical order.
+
+### Changed
+
+- **`--ar-content` is transition-only.** New-flow archives receive detail automatically at Tier 2, so
+  nothing moves at Tier 3; `--plan` requests `--ar-content` solely for summary dates collapsing whose
+  detail was never archived — i.e. changelogs condensed under the 1.0.x flow. Existing anchors,
+  flags, and checks are otherwise unchanged.
+
+### Note for existing installs
+
+A changelog condensed under 1.0.x has `### DATE` summaries whose full detail was already discarded
+(it survives only in git history). Nothing breaks: when such a date collapses into a week-range,
+`--plan` asks for `--ar-content` exactly as before, and the summary is archived as the best remaining
+record. Days folded after this upgrade get the verbatim treatment from their first condense on.
 
 ---
 
