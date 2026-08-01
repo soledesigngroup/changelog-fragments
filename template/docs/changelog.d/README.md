@@ -79,6 +79,11 @@ descending date order, no duplicated date, summary sentinel and archive footer
 intact. Writes nothing, exits non-zero on a problem, so it works as a pre-commit or
 CI gate. Pending fragments are normal and are not a failure.
 
+It also prints advisory `lint` warnings for bullets missing a `**bold subject**`
+or an anchor-file link — the grep keys every summary tier carries forward.
+Warnings never fail the check or block the fold; fix the fragment while it's
+still on disk, because after the fold the bullet is history.
+
 ## Why the fold is byte-preserving
 
 `mergeFragmentsIntoChangelog` (`scripts/collect-changelog.mjs`) copies bullet

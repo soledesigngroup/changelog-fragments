@@ -35,7 +35,11 @@ The diff's full story already lives in git — the changelog is the **index**, n
    - Put **all** of this session's entries in this one file; add more `### Category` sections rather than a second file.
 3. Fill it with `### Category` sections and `- **bold subject** — …` bullets. The category must be one of **Added**, **Changed**, **Deprecated**, **Fixed**, **Removed**, **Security** — the fold refuses a fragment with any other heading rather than guess where it belongs, so don't invent one (no `### Docs`, `### Performance`, `### Notes`).
 4. Keep each entry within the concision rules below.
-5. When committing, **stage only your fragment file** (explicit path — never `git add -A`). Do not touch `docs/changelog.md`.
+5. Check your fragment: run `{{FOLD_CMD_CHECK}}`. It verifies the fragment is foldable and prints
+   `lint` warnings for bullets missing a **bold subject** or an anchor-file link — the keys future
+   greps and every summary tier rely on. Warnings don't block the fold, but fix them now: this is
+   the only moment the fragment is still yours to edit.
+6. When committing, **stage only your fragment file** (explicit path — never `git add -A`). Do not touch `docs/changelog.md`.
 
 ## Concision Rules (hard limits)
 

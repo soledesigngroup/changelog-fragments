@@ -507,6 +507,38 @@ group("folding fragments", () => {
     const r = foldAttempt(repo)
     assert.ok(!r.out.includes(".fold.lock"))
   })
+
+  test("a bullet missing its grep keys warns but still folds, verbatim", () => {
+    fragment(repo, "2026-07-31-lint-3a3a.md", "### Fixed\n- fixed the thing\n")
+    const r = foldAttempt(repo)
+    assert.equal(r.status, 0, "lint warnings must never change the exit code")
+    assert.match(r.out, /lint 2026-07-31-lint-3a3a\.md: Fixed: bullet has no \*\*bold subject\*\*/)
+    assert.match(r.out, /lint 2026-07-31-lint-3a3a\.md: Fixed: bullet names no anchor file/)
+    assert.ok(read(repo, "docs/changelog.md").includes("- fixed the thing"))
+    assert.ok(!existsSync(join(repo, "docs/changelog.d/2026-07-31-lint-3a3a.md")))
+  })
+
+  test("a fully-keyed bullet emits no lint warning", () => {
+    fragment(
+      repo,
+      "2026-07-31-clean-3b3b.md",
+      "### Changed\n- **Sidebar** — split settings out. [`sidebar.tsx`](../src/sidebar.tsx). (#12)\n"
+    )
+    const r = foldAttempt(repo)
+    assert.equal(r.status, 0, r.out)
+    assert.ok(!r.out.includes("lint 2026-07-31-clean-3b3b.md"), r.out)
+  })
+
+  test("a link on a wrapped continuation line satisfies the lint", () => {
+    fragment(
+      repo,
+      "2026-07-31-wrap-3c3c.md",
+      "### Fixed\n- **Wrapped** — the description continues\n  onto a second line. [`x.ts`](../src/x.ts).\n"
+    )
+    const r = foldAttempt(repo)
+    assert.equal(r.status, 0, r.out)
+    assert.ok(!r.out.includes("lint 2026-07-31-wrap-3c3c.md"), r.out)
+  })
 })
 
 group("fold --check", () => {
@@ -604,6 +636,15 @@ group("fold --check", () => {
     install(legacy)
     const r = foldAttempt(legacy, ["--check"])
     assert.equal(r.status, 0, r.out)
+  })
+
+  test("lint warnings surface in --check but do not fail it", () => {
+    fragment(repo, "2026-07-27-lint-4a4a.md", "### Fixed\n- fixed the thing\n")
+    const r = foldAttempt(repo, ["--check"])
+    assert.equal(r.status, 0, "a quality warning must never make a CI gate red:\n" + r.out)
+    assert.match(r.out, /lint 2026-07-27-lint-4a4a\.md: Fixed: bullet has no \*\*bold subject\*\*/)
+    assert.match(r.out, /check passed/)
+    rmSync(join(repo, "docs/changelog.d/2026-07-27-lint-4a4a.md"))
   })
 })
 

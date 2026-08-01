@@ -30,6 +30,12 @@
  * the others folded fine), another fold holds the lock, --check found a problem, or
  * the fragment directory is gone. Exit 2 = bad arguments.
  *
+ * All three modes also print advisory `lint` warnings for bullets missing a
+ * **bold subject** or an anchor-file link — the retrieval keys every condense
+ * tier carries forward. Warnings never change the exit code, and the fold never
+ * edits a bullet to fix one (that would break the verbatim guarantee); fix the
+ * fragment file while it still exists.
+ *
  * Only one fold runs at a time (an exclusive `.fold.lock` in the fragment dir), and
  * changelog.md is written through a temp file + rename, so a killed fold leaves the
  * changelog either untouched or fully folded — never half-way. Fragment deletion
@@ -136,6 +142,45 @@ export function extractFragmentBlocks(markdown) {
       b.rawLines.pop()
   }
   return blocks.filter((b) => b.rawLines.some((l) => l.trim() !== ""))
+}
+
+/**
+ * Advisory warnings for bullets missing their retrieval keys — the `**bold
+ * subject**` and anchor-file link that the condense tiers carry forward and
+ * that future greps find. Warnings only: the fold refuses a fragment when it
+ * can't *place* content, never over quality, and it can't fix a bullet itself
+ * without breaking the byte-verbatim guarantee. Callers print these and leave
+ * the exit code alone — the moment to act on one is while the fragment is
+ * still on disk and its author can still edit it.
+ *
+ * A bullet is a column-0 `- ` line plus its indented continuation lines, so a
+ * link on a wrapped line still counts.
+ */
+export function lintFragmentBlocks(blocks) {
+  const warnings = []
+  for (const b of blocks) {
+    let bullet = null
+    const flush = () => {
+      if (!bullet) return
+      const head = bullet[0].trim()
+      const shown = JSON.stringify(head.length > 48 ? `${head.slice(0, 48)}…` : head)
+      if (!/^- \*\*[^*]+\*\*/.test(head))
+        warnings.push(`${b.category}: bullet has no **bold subject** grep key: ${shown}`)
+      if (!/\[[^\]]*\]\([^)]+\)/.test(bullet.join(" ")))
+        warnings.push(`${b.category}: bullet names no anchor file ([\`file\`](…) link): ${shown}`)
+      bullet = null
+    }
+    for (const line of b.rawLines) {
+      if (/^- /.test(line)) {
+        flush()
+        bullet = [line]
+      } else if (bullet && line.trim() !== "") {
+        bullet.push(line)
+      }
+    }
+    flush()
+  }
+  return warnings
 }
 
 /** Render a day's merged categories (canonical order) as changelog lines. */
@@ -479,9 +524,15 @@ function readFragments() {
       skipped.push({ name, reason: 'no "### Category" bullet blocks found' })
       continue
     }
-    fragments.push({ name, path, date, blocks })
+    fragments.push({ name, path, date, blocks, warnings: lintFragmentBlocks(blocks) })
   }
   return { fragments, skipped }
+}
+
+/** Advisory only — never touches the exit code (see lintFragmentBlocks). */
+function printLintWarnings(fragments) {
+  for (const f of fragments)
+    for (const w of f.warnings) console.warn(`[collect-changelog] lint ${f.name}: ${w}`)
 }
 
 const bulletCount = (blocks) =>
@@ -547,6 +598,7 @@ function runFold({ dryRun }) {
           `${n} bullet${n === 1 ? "" : "s"})`
       )
     }
+    printLintWarnings(fragments)
 
     if (fragments.length === 0) {
       console.log(`[collect-changelog] nothing foldable (${skipped.length} skipped)`)
@@ -591,6 +643,7 @@ function runCheck() {
 
   const problems = []
   const { fragments, skipped } = readFragments()
+  printLintWarnings(fragments)
   for (const { name, reason } of skipped) problems.push(`${FRAGMENT_DIR}/${name}: ${reason}`)
 
   let changelog

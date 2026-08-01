@@ -139,8 +139,8 @@ comparison.
 
 **Payload scripts are dependency-free ESM on node builtins only** (Node 18+), and stay importable:
 `collect-changelog.mjs` exports its fold helpers (`extractFragmentBlocks`,
-`mergeFragmentsIntoChangelog`, `auditChangelog`, `fragmentDateFromFilename`, `FragmentError`) and
-guards the CLI as described above.
+`mergeFragmentsIntoChangelog`, `auditChangelog`, `lintFragmentBlocks`, `fragmentDateFromFilename`,
+`FragmentError`) and guards the CLI as described above.
 
 **The installer is idempotent.** Re-running it updates scripts and commands in place. `isMigrated()`
 gates re-migration; `writeOut()` reports `unchanged` when content matches byte-for-byte. It never
