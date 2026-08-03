@@ -1,3 +1,8 @@
 node_modules/
 .DS_Store
 *.log
+
+# playwright-cli run output (snapshots, screenshots) — ignored.
+# NOTE: `.playwright/` is COMMITTED CONFIG, not output. Never add it here — its
+# presence is what gives this repo its own playwright-cli daemon namespace.
+.playwright-cli/
