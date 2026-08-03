@@ -12,7 +12,49 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.1.0`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.2.0`.
+
+---
+
+## [1.2.0] — 2026-08-03
+
+The observability release: one read-only command answers "is this system actually being used?"
+**Upgrade: optional — re-run `install.mjs`. Safe on an existing installation**; nothing about the
+fold, the condense, or any file format changed, and every existing flag behaves identically.
+
+### Added
+
+- **`collect-changelog.mjs --report`** — a read-only census of the whole system: pending fragments
+  by category with their lint warnings, each tier's size and date span, the structural problems
+  `--check` would fail on, and a **capture-coverage** section built from git. It writes nothing,
+  takes no lock, and always exits 0 once it can read the files — it is a dashboard, not a gate.
+- **Capture coverage answers the one question nothing else could.** Every other failure mode here is
+  loud: an unfoldable fragment exits non-zero and stays on disk, a hand-edited changelog fails
+  `--check`, an interrupted fold is recovered by the next run. But a session that simply never wrote
+  a fragment emits no event — the failure is the *absence* of one, so no log or counter inside these
+  scripts could ever record it. The report asks git which days had commits touching anything but the
+  changelog's own files, then names the ones no tier documents. A day counts as documented by a
+  pending fragment, a Tier-1 block, a summary entry, an archived day, or a week-range containing it.
+- **`--json` and `--since`.** `--json` emits the same census as one object, so CI can trend the
+  numbers instead of a human eyeballing them; `--since` takes any git date expression (default
+  `30.days`). Both are refused outside `--report` rather than silently ignored.
+- **Two exported pure helpers** — `summarizeChangelog` and `summarizeArchive` — so a repo can build
+  its own dashboard, or aggregate several installations, without reimplementing the parsing.
+- **`{{FOLD_CMD_REPORT}}`** joins the installer's substitutions, and the printed `CLAUDE.md` snippet
+  is now covered by a test in both the `package.json` and bare-`node` branches (it is printed rather
+  than written, so no file assertion reached it before).
+
+### Note on telemetry
+
+The report deliberately writes **no** log file. Fold and condense activity is already recorded — in
+git, in the commits that move fragments into `changelog.md` — and an append-only log committed
+alongside it would conflict on every concurrent write, recreating exactly the shared-file race this
+system exists to remove. What was genuinely invisible was under-capture, and that is a ratio, not an
+event. `--report` computes the ratio; nothing new is persisted.
+
+`--report` shells out to `git` (the only subprocess either payload script spawns). Payload scripts
+remain dependency-free — no git, no repo, or a shallow clone simply drops the coverage section and
+still prints the filesystem census.
 
 ---
 

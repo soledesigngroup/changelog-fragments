@@ -32,7 +32,7 @@ node install.mjs /path/to/repo --name "X" [--no-commands]
 In an installed repo, the payload's own entry points:
 
 ```bash
-node scripts/collect-changelog.mjs [--dry-run|--check]
+node scripts/collect-changelog.mjs [--dry-run|--check|--report [--json] [--since <git-date>]]
 node scripts/condense-changelog.mjs --changelog … --archive … --plan --today $(date +%F)
 ```
 
@@ -135,12 +135,34 @@ arithmetic — with exactly one carve-out: `shiftDays()` in `condense-changelog.
 to turn `--today` into the tier cutoffs. It's safe on the invariant's own terms — the date arrives
 explicitly via `--today` (the clock is never read) and the math is `Date.UTC` + whole days, so there's
 no local midnight to land on the wrong side of. Don't grow a second one; entry comparison stays string
-comparison.
+comparison. `--report` needs a *time window* and still doesn't get a carve-out: `--since` is handed to
+git verbatim, git does the windowing, and the script only ever compares the `YYYY-MM-DD` strings git
+prints back. Keep it that way — the moment the report parses a date it owns timezones forever.
+
+**`--report` is a dashboard, never a gate.** It exits 0 on everything it can read — a structural
+problem or a stuck fragment is *printed*, not ruled on, because `--check` already fails CI on exactly
+those and a second command doing it makes one of them redundant. The only non-zero exits are bad
+arguments (2) and a missing `docs/changelog.d/` or `docs/changelog.md` (1 — a broken install has no
+report to give). It writes nothing, and it reads the archive and summary zones that condense owns —
+reading across an ownership boundary is fine; writing across one is the thing those rules forbid.
+
+**Under-capture is only visible as a ratio.** Every other failure mode is loud: an unfoldable fragment
+exits non-zero and stays on disk, a hand-edit fails `--check`, an interrupted fold is recovered. But a
+session that never wrote a fragment emits no event, so no log or counter inside these scripts could
+ever record it — the absence is the failure. `--report`'s coverage section is the answer: git supplies
+the days with commits touching anything but the changelog's own files, and a day counts as documented
+if *any* tier covers it (pending fragment, Tier-1 block, summary entry, archive entry, or a week-range
+containing it). Miss a tier there and the report invents undocumented days that are fine. `folds` and
+`lastCondense` use `--diff-filter=M` because the commit that *adds* changelog.md is the installer, not
+a fold; without it a fresh install reports itself as the most recent fold.
 
 **Payload scripts are dependency-free ESM on node builtins only** (Node 18+), and stay importable:
 `collect-changelog.mjs` exports its fold helpers (`extractFragmentBlocks`,
 `mergeFragmentsIntoChangelog`, `auditChangelog`, `lintFragmentBlocks`, `fragmentDateFromFilename`,
-`FragmentError`) and guards the CLI as described above.
+`FragmentError`) plus the read-only census `--report` renders (`summarizeChangelog`,
+`summarizeArchive`), and guards the CLI as described above. `node:child_process` is imported for the
+one `git` shell-out in `--report`; it is the only subprocess either payload script spawns, every
+failure of it degrades to a dropped section, and nothing else may come to depend on git being present.
 
 **The installer is idempotent.** Re-running it updates scripts and commands in place. `isMigrated()`
 gates re-migration; `writeOut()` reports `unchanged` when content matches byte-for-byte. It never
@@ -163,6 +185,10 @@ seeded markdown. Changing one means changing it in **all** of them plus the temp
   the one line the shed's losslessness check is allowed to supersede.
 - Heading shapes: `## YYYY-MM-DD` (Tier 1 full detail), `### YYYY-MM-DD` (Tier 2 / archive per-day),
   `### YYYY-MM-DD to YYYY-MM-DD` (Tier 3 week-range). Anything else is invisible to the regexes.
+  The `###` pair now lives in **both** payload scripts — condense's `reH3Date`/`reH3Range` write them,
+  `collect-changelog.mjs`'s `AGED_DAY_RE`/`AGED_RANGE_RE` read them for `--report`. A shape only one
+  side knows is a tier the report silently counts as empty, and days the coverage check then calls
+  undocumented.
   The Tier-1 shape tolerates **trailing text** (`## 2026-07-03 (parenthetical)`) and the fold's
   `DAY_DATE_RE` and condense's `reH2Day` must agree on that or a legacy day is ordered by one and
   invisible to the other — classified into no tier, never swept into a splice region, stuck forever.
@@ -171,8 +197,8 @@ seeded markdown. Changing one means changing it in **all** of them plus the temp
 ## Template substitution
 
 `install.mjs` replaces `{{FOLD_CMD}}`, `{{FOLD_CMD_DRY}}`, `{{FOLD_CMD_DRY_INLINE}}`,
-`{{FOLD_CMD_CHECK}}`, and `{{PROJECT_NAME}}` when copying — but the two `.mjs` payload scripts are
-copied with `raw: true`,
+`{{FOLD_CMD_CHECK}}`, `{{FOLD_CMD_REPORT}}`, and `{{PROJECT_NAME}}` when copying — but the two `.mjs`
+payload scripts are copied with `raw: true`,
 so a placeholder written into them ships through literally. The `{{FOLD_CMD}}` pair resolves to
 `npm run changelog:fold` or bare `node scripts/collect-changelog.mjs` depending on whether the target
 has a `package.json`; both branches are covered by tests.
@@ -195,3 +221,7 @@ heading (the boundary is then under entries that belong inside it, so folds land
 duplicated `## DATE`, duplicate `### Category` sections within one day block, a missing sentinel or
 footer, or a pending fragment the fold would refuse. Wire it into CI or a pre-commit hook in target repos.
 Repeated *legacy* day headings are exempt — the migrator preserves those deliberately.
+
+`--report` is the read-only counterpart and the only thing that reads every zone at once. It writes
+nothing anywhere, so it doesn't take the fold lock and is safe to run against a tree with a fold in
+flight.

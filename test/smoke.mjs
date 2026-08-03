@@ -200,6 +200,18 @@ group("migrating an existing messy changelog", () => {
     assert.ok(!read(messy, "docs/changelog.d/README.md").includes("{{"))
   })
 
+  test("the printed CLAUDE.md snippet substitutes in both branches", () => {
+    // This one is PRINTED, never written, so no file assertion covers it — an
+    // unsubstituted placeholder here is one the user pastes into their CLAUDE.md.
+    const withPkg = install(newRepo({ "package.json": '{\n  "name": "snip"\n}\n' }))
+    assert.ok(!withPkg.includes("{{"), `placeholder printed for the user to paste:\n${withPkg}`)
+    assert.match(withPkg, /npm run changelog:fold -- --report/)
+
+    const noPkg = install(newRepo({}))
+    assert.ok(!noPkg.includes("{{"), noPkg)
+    assert.match(noPkg, /node scripts\/collect-changelog\.mjs --report/)
+  })
+
   test("an added title lands below YAML frontmatter, not above it", () => {
     const fm = newRepo({
       "docs/changelog.md":
@@ -737,6 +749,214 @@ const midlifeRepo = () => {
   write(dir, "docs/changelog-archive.md", MIDLIFE_AR)
   return dir
 }
+
+group("fold --report", () => {
+  const repo = midlifeRepo()
+  const report = (dir, extra = []) =>
+    attempt("node", ["scripts/collect-changelog.mjs", "--report", ...extra], dir)
+
+  /** A minimal changelog documenting exactly `dates` — one bullet per day. */
+  const changelogFor = (dates) =>
+    ["# Changelog", "", "---", ""]
+      .concat(dates.flatMap((d) => [`## ${d}`, "", "### Added", `- **Day ${d}** — x.`, "", "---", ""]))
+      .concat([
+        "## Earlier Changes (Summary)",
+        "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)",
+        "",
+      ])
+      .join("\n")
+
+  test("censuses every tier of a mid-life changelog", () => {
+    const r = report(repo)
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /read-only, nothing written/)
+    assert.match(r.out, /day blocks\s+4\s+2026-07-26 → 2026-07-18/, r.out)
+    assert.match(r.out, /bullets\s+4\s+Added 2, Changed 1, Fixed 1/, r.out)
+    assert.match(r.out, /summary days\s+3\s+2026-07-14 → 2026-07-02/, r.out)
+    assert.match(r.out, /summary ranges\s+2\s+2026-06-07 → 2026-05-04/, r.out)
+    assert.match(r.out, /archive entries\s+6\s+2026-06-07 → 2025-11-02/, r.out)
+  })
+
+  test("pending fragments are counted by category, with their lint warnings", () => {
+    fragment(repo, "2026-07-26-a-1a1a.md", "### Added\n- **One** — x. [`a.ts`](../a.ts)\n")
+    fragment(repo, "2026-07-27-b-2b2b.md", "### Fixed\n- no keys at all\n- **Two** — y.\n")
+    const r = report(repo)
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /foldable\s+2\s+2026-07-27 → 2026-07-26/, r.out)
+    assert.match(r.out, /bullets\s+3\s+Added 1, Fixed 2/, r.out)
+    // "no keys at all" misses both keys; "**Two**" misses only the link.
+    assert.match(r.out, /lint warnings\s+3/, r.out)
+  })
+
+  test("an unfoldable fragment is listed but the report still exits 0", () => {
+    fragment(repo, "2026-07-28-bad-3c3c.md", "### Docs\n- **Nope** — wrong category.\n")
+    const r = report(repo)
+    assert.equal(r.status, 0, `--report is a dashboard, --check is the gate:\n${r.out}`)
+    assert.match(r.out, /unfoldable\s+1/, r.out)
+    assert.match(r.out, /- 2026-07-28-bad-3c3c\.md: line 1: unrecognized heading/, r.out)
+    rmSync(join(repo, "docs/changelog.d/2026-07-28-bad-3c3c.md"))
+  })
+
+  test("--json emits the whole census as one parseable object", () => {
+    const j = JSON.parse(run("node", ["scripts/collect-changelog.mjs", "--report", "--json"], repo))
+    assert.equal(j.tier1.days, 4)
+    assert.deepEqual(j.tier1.categories, { Added: 2, Changed: 1, Fixed: 1 })
+    assert.equal(j.aged.summaryDays.length, 3)
+    assert.deepEqual(j.aged.summaryRanges[0], ["2026-06-01", "2026-06-07"])
+    assert.equal(j.aged.archiveDays.length, 6)
+    assert.deepEqual(j.problems, [])
+  })
+
+  test("structural problems print but never fail the report", () => {
+    const broken = newRepo({ "package.json": '{\n  "name": "broken"\n}\n' })
+    install(broken)
+    write(broken, "docs/changelog.md", read(broken, "docs/changelog.md").replace("> Full per-day", "> nope"))
+    const r = report(broken)
+    assert.equal(r.status, 0, `a dashboard that fails CI duplicates --check:\n${r.out}`)
+    assert.match(r.out, /problems\s+1\s+--check reports these as a failure/, r.out)
+    assert.match(r.out, /missing footer pointer/, r.out)
+    assert.equal(foldAttempt(broken, ["--check"]).status, 1, "…but --check must still gate on it")
+  })
+
+  test("legacy bullets under no category count toward the day, flagged apart", () => {
+    const legacy = newRepo({ "package.json": '{\n  "name": "legacy"\n}\n' })
+    install(legacy)
+    write(
+      legacy,
+      "docs/changelog.md",
+      [
+        "# Changelog",
+        "",
+        "---",
+        "",
+        "## 2026-07-26 (imported)",
+        "",
+        "- **Loose legacy line** — sits under no '### Category'.",
+        "",
+        "### Added",
+        "- **Categorized** — x.",
+        "",
+        "---",
+        "",
+        "## Earlier Changes (Summary)",
+        "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)",
+        "",
+      ].join("\n")
+    )
+    const r = report(legacy)
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /bullets\s+2\s+Added 1 \(\+1 uncategorized\)/, r.out)
+    assert.match(r.out, /legacy headings\s+1/, r.out)
+  })
+
+  test("a missing changelog.md is an error, not an empty report", () => {
+    const gutted = newRepo({ "package.json": '{\n  "name": "gutted"\n}\n' })
+    install(gutted)
+    rmSync(join(gutted, "docs/changelog.md"))
+    const r = report(gutted)
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /nothing to report on/, r.out)
+  })
+
+  test("--json and --since are refused outside --report", () => {
+    const r = foldAttempt(repo, ["--json"])
+    assert.equal(r.status, 2, r.out)
+    assert.match(r.out, /--json is only meaningful with --report/, r.out)
+    assert.equal(foldAttempt(repo, ["--since", "7.days"]).status, 2)
+  })
+
+  test("--since needs a value", () => {
+    const r = foldAttempt(repo, ["--report", "--since"])
+    assert.equal(r.status, 2, r.out)
+    assert.match(r.out, /--since needs a value/, r.out)
+  })
+
+  test("the coverage section degrades when git can't read the tree", () => {
+    // newRepo's `.git` is an empty directory, not a repository — so `repo` is a
+    // tree git refuses to answer about, and the census must still print.
+    const r = report(repo)
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Capture coverage\n\s+unavailable/, r.out)
+    assert.match(r.out, /day blocks\s+4/, "the filesystem census must still print without git")
+  })
+
+  /** A REAL git repo — newRepo only makes an empty `.git` directory — with the payload installed. */
+  const gitRepo = (name) => {
+    const dir = newRepo({ "package.json": `{\n  "name": "${name}"\n}\n` })
+    const git = (...args) => run("git", ["-c", "commit.gpgsign=false", ...args], dir)
+    git("init", "-q", ".")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "Test")
+    install(dir)
+    /** The author date git recorded for HEAD, as `YYYY-MM-DD`. */
+    const headDay = () => run("git", ["log", "-1", "--date=short", "--pretty=%ad"], dir).trim()
+    return { dir, git, headDay }
+  }
+
+  test("git coverage names the active days that no entry documents", () => {
+    const { dir, git, headDay } = gitRepo("cadence")
+
+    // Relative dates, so the window this asserts on can never age out of --since.
+    const dates = []
+    for (const ago of ["5 days ago", "3 days ago", "1 day ago"]) {
+      write(dir, "src.txt", ago)
+      git("add", "-A")
+      git("commit", "-q", "--date", ago, "-m", `work ${ago}`)
+      dates.push(headDay())
+    }
+    const [oldest, middle, newest] = dates
+    write(dir, "docs/changelog.md", changelogFor([newest, oldest]))
+
+    const r = report(dir)
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /active days\s+3/, r.out)
+    assert.match(r.out, /documented\s+2/, r.out)
+    assert.match(r.out, new RegExp(`undocumented\\s+1\\s+${middle}`), r.out)
+    assert.match(r.out, /a fragment nobody wrote raises no error/, r.out)
+  })
+
+  test("the commit that installs the changelog is not counted as a fold", () => {
+    const { dir, git } = gitRepo("installed")
+    git("add", "-A")
+    git("commit", "-q", "-m", "install changelog-fragments")
+
+    const before = report(dir)
+    assert.match(
+      before.out,
+      /folds\s+0/,
+      `an install ADDS changelog.md; only a fold MODIFIES it:\n${before.out}`
+    )
+    assert.match(before.out, /last condense\s+never/, before.out)
+
+    fragment(dir, "2026-07-26-x-9e9e.md", "### Added\n- **Real work** — x. [`a.ts`](../a.ts)\n")
+    fold(dir)
+    git("add", "-A")
+    git("commit", "-q", "-m", "fold")
+    assert.match(report(dir).out, /folds\s+1/, report(dir).out)
+  })
+
+  test("a day covered only by a Tier-3 week-range still counts as documented", () => {
+    const { dir, git, headDay } = gitRepo("ranged")
+    write(dir, "src.txt", "work")
+    git("add", "-A")
+    git("commit", "-q", "--date", "3 days ago", "-m", "work")
+    const day = headDay()
+
+    write(
+      dir,
+      "docs/changelog.md",
+      changelogFor([]).replace(
+        "## Earlier Changes (Summary)\n",
+        `## Earlier Changes (Summary)\n\n### ${day} to ${day}\nTheme summary.\n`
+      )
+    )
+    const r = report(dir)
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /undocumented\s+0/, `a week-range documents the days inside it:\n${r.out}`)
+  })
+})
 
 const CL_AR = ["--changelog", "docs/changelog.md", "--archive", "docs/changelog-archive.md"]
 
@@ -1523,6 +1743,7 @@ group("fresh repo with no changelog", () => {
       )
     )
     assert.ok(read(fresh, "docs/changelog.d/README.md").includes("collect-changelog.mjs --check"))
+    assert.ok(read(fresh, "docs/changelog.d/README.md").includes("collect-changelog.mjs --report"))
   })
 
   test("the first fold into an empty changelog lands above the sentinel", () => {

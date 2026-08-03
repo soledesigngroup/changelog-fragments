@@ -84,6 +84,29 @@ or an anchor-file link — the grep keys every summary tier carries forward.
 Warnings never fail the check or block the fold; fix the fragment while it's
 still on disk, because after the fold the bullet is history.
 
+## Is the system actually being used?
+
+```bash
+{{FOLD_CMD_REPORT}}
+```
+
+A read-only dashboard: what's pending, how big each tier is, and — the part
+nothing else can tell you — **which days had commits that no changelog entry
+covers**. Every other failure here is loud (an unfoldable fragment exits
+non-zero and stays on disk; a broken changelog fails `--check`), but a session
+that simply never wrote a fragment raises no error and leaves no trace. The only
+way to see that is as a ratio against activity, which is what the coverage
+section is.
+
+Days documented by *any* tier count — a pending fragment, a Tier-1 day block, a
+summary entry, an archived day, or a week-range that contains the date. It reads
+git for the activity side, so it degrades to just the census in a tree git can't
+read. `--since <git-date>` moves the window (default `30.days`); `--json` emits
+the same numbers as an object, which is the form to trend in CI.
+
+It is a dashboard, never a gate: it exits 0 even while printing problems.
+`--check` is the gate.
+
 ## Why the fold is byte-preserving
 
 `mergeFragmentsIntoChangelog` (`scripts/collect-changelog.mjs`) copies bullet

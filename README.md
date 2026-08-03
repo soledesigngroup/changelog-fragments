@@ -122,10 +122,42 @@ npm run changelog:fold -- --check
 
 # periodically — folds first, then ages older entries down the tiers
 /changelog-condense
+
+# occasionally — is the system actually being used? (read-only, never a gate)
+npm run changelog:fold -- --report
 ```
 
 Only one fold can run at a time: it takes an exclusive lock and a second invocation exits rather than
 racing, so "run it when the tree is quiet" is enforced rather than merely advised.
+
+## Is it working? (`--report`)
+
+Every failure this system has is loud except one. An unfoldable fragment exits non-zero and stays on
+disk; a hand-edited changelog fails `--check`; a fold that dies mid-run is recovered by the next one.
+But a session that simply **never wrote a fragment** raises no error and leaves no trace — the failure
+is the *absence* of an event, so no amount of logging inside these scripts would ever record it.
+
+The only thing that can see it is a ratio against activity, which is what `--report` prints:
+
+```
+Capture coverage (git, since 30.days)
+  active days             14  22 commit(s) outside the changelog's own files
+  documented              11
+  undocumented             3  2026-07-29, 2026-07-24, 2026-07-21
+  folds                    6  last 2026-08-01
+  last condense                2026-07-26
+```
+
+A day is *active* if something other than the changelog's own files changed that day, and *documented*
+if any tier covers it — a pending fragment, a Tier-1 day block, a summary entry, an archived day, or a
+week-range containing the date. Above that section it censuses the pending fragments (by category, with
+their lint warnings) and every tier's size, so one command answers both "is anything stuck?" and "is
+anyone using this?".
+
+It reads git only for the activity side and degrades to the census alone in a tree git can't read.
+`--since <git-date>` moves the window; `--json` emits the same numbers as an object, which is the form
+to trend in CI. It writes nothing and always exits 0 — printing a problem is the job, not a verdict.
+`--check` remains the gate.
 
 ## Searching history
 
@@ -236,7 +268,7 @@ that are load-bearing, so read that before changing behavior.
 
 Releases are tagged and noted in [CHANGELOG.md](CHANGELOG.md); each entry says whether re-running
 `install.mjs` over an existing installation is safe. Pin a version with
-`npx degit soledesigngroup/changelog-fragments#v1.1.0`.
+`npx degit soledesigngroup/changelog-fragments#v1.2.0`.
 
 ## License
 

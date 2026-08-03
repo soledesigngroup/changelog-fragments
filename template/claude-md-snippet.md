@@ -16,7 +16,8 @@ collision structurally impossible.
    ({{FOLD_CMD_DRY_INLINE}} to preview) batches every pending fragment into `docs/changelog.md` and
    deletes them. `/changelog-condense` runs the fold first, then ages older entries down through the
    summary tiers into `docs/changelog-archive.md`. `{{FOLD_CMD_CHECK}}` verifies fragments and
-   changelog structure without writing anything.
+   changelog structure without writing anything; `{{FOLD_CMD_REPORT}}` is the read-only dashboard
+   (tier sizes, and which days had commits no entry documents).
 
 Entries are a **scannable index of history**, not PR descriptions: 1–2 sentences each (Security may
 run to ~3), name the one or two anchor files, append the issue/PR ref when one exists (`(#123)`),

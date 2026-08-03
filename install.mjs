@@ -111,6 +111,9 @@ const FOLD_CMD_DRY = hasPkg
 const FOLD_CMD_CHECK = hasPkg
   ? "npm run changelog:fold -- --check"
   : "node scripts/collect-changelog.mjs --check"
+const FOLD_CMD_REPORT = hasPkg
+  ? "npm run changelog:fold -- --report"
+  : "node scripts/collect-changelog.mjs --report"
 
 const projectName = args.name || titleize(pkg?.name || basename(target))
 
@@ -119,6 +122,7 @@ const SUBS = {
   "{{FOLD_CMD_DRY}}": FOLD_CMD_DRY,
   "{{FOLD_CMD_DRY_INLINE}}": "`" + FOLD_CMD_DRY + "`",
   "{{FOLD_CMD_CHECK}}": FOLD_CMD_CHECK,
+  "{{FOLD_CMD_REPORT}}": FOLD_CMD_REPORT,
   "{{PROJECT_NAME}}": projectName,
 }
 

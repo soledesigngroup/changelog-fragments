@@ -25,10 +25,20 @@
  *   node scripts/collect-changelog.mjs             # fold + delete fragments
  *   node scripts/collect-changelog.mjs --dry-run   # report only, write nothing
  *   node scripts/collect-changelog.mjs --check     # verify structure, write nothing
+ *   node scripts/collect-changelog.mjs --report    # census + coverage, write nothing
  *
  * Exit 0 = clean. Exit 1 = something needs a human: a fragment was skipped (even if
  * the others folded fine), another fold holds the lock, --check found a problem, or
  * the fragment directory is gone. Exit 2 = bad arguments.
+ *
+ * --report is a dashboard, never a gate — it exits 0 even when it prints problems,
+ * because --check is the gate. It censuses the pending fragments, the Tier-1 zone and
+ * the aged tiers, then asks git which days had commits that no changelog entry covers.
+ * That last number is the point: everything else here is already visible in a diff,
+ * but a fragment nobody wrote emits no error and leaves no trace, so under-capture is
+ * only ever detectable as a RATIO against activity. `--json` makes the whole census
+ * machine-readable so CI can trend it; `--since` takes any git date expression
+ * (default `30.days`). No git, no repo, or a shallow clone just drops that section.
  *
  * All three modes also print advisory `lint` warnings for bullets missing a
  * **bold subject** or an anchor-file link — the retrieval keys every condense
@@ -50,6 +60,7 @@
  */
 
 import { readdirSync, readFileSync, writeFileSync, renameSync, rmSync, realpathSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -59,9 +70,11 @@ const ROOT = resolve(dirname(SELF), "..")
 // Displayed in messages; the absolute forms below are what actually get read.
 const FRAGMENT_DIR = "docs/changelog.d"
 const CHANGELOG_PATH = "docs/changelog.md"
+const ARCHIVE_PATH = "docs/changelog-archive.md"
 
 const fragmentDir = join(ROOT, FRAGMENT_DIR)
 const changelogPath = join(ROOT, CHANGELOG_PATH)
+const archivePath = join(ROOT, ARCHIVE_PATH)
 const lockPath = join(fragmentDir, ".fold.lock")
 
 // ---------------------------------------------------------------------------
@@ -81,6 +94,15 @@ const DAY_HEADING_RE = /^##\s+/
 const ANY_HEADING_RE = /^#{1,3}\s+\S/
 /** A day heading's leading ISO date, tolerating legacy trailing text. */
 const DAY_DATE_RE = /^##\s+(\d{4}-\d{2}-\d{2})/
+/**
+ * The aged-entry shapes: Tier-2 per-day and Tier-3 week-range. READ-ONLY here —
+ * only condense-changelog.mjs writes them — but `--report` has to census the tiers
+ * this script's entries eventually age into, so these must stay in step with that
+ * script's reH3Date / reH3Range. A shape this script can't read is a tier it
+ * silently reports as empty, so keep them anchored exactly as condense has them.
+ */
+const AGED_DAY_RE = /^### (\d{4}-\d{2}-\d{2})[ \t]*$/
+const AGED_RANGE_RE = /^### (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})[ \t]*$/
 
 /** A fragment this script refuses to fold rather than fold incompletely. */
 export class FragmentError extends Error {}
@@ -422,6 +444,77 @@ export function auditChangelog(changelogMd) {
   return problems
 }
 
+/** Bullet lines in a run of markdown — one notion of "a bullet" for the whole file. */
+const countBullets = (lines) => lines.filter((l) => l.trim().startsWith("- ")).length
+
+/** The `### DATE` / `### DATE to DATE` entries in a run of lines. */
+function agedEntries(lines) {
+  const days = []
+  const ranges = []
+  for (const line of lines) {
+    const range = line.match(AGED_RANGE_RE)
+    if (range) {
+      ranges.push([range[1], range[2]])
+      continue
+    }
+    const day = line.match(AGED_DAY_RE)
+    if (day) days.push(day[1])
+  }
+  return { days, ranges }
+}
+
+/**
+ * A read-only census of changelog.md: the Tier-1 day blocks this script owns, and
+ * the aged entries below the summary sentinel that condense owns. Pure, and
+ * deliberately opinion-free — it counts what is there and never judges it, so
+ * `--report` can print a picture of a changelog that `auditChangelog` would reject.
+ *
+ * Bullets sitting directly under a `## DATE` with no `### Category` above them
+ * (legacy content the migrator preserved) count toward the day but toward no
+ * category — that gap is real history, not a parse failure.
+ */
+export function summarizeChangelog(md) {
+  const lines = md.split("\n")
+  const { start, end } = tier1Bounds(lines)
+
+  const tier1 = []
+  let day = null
+  let section = null
+  for (let i = start; i < end; i++) {
+    const line = lines[i]
+    if (DAY_HEADING_RE.test(line)) {
+      day = {
+        date: line.match(DAY_DATE_RE)?.[1] ?? null,
+        canonical: DATE_RE.test(line),
+        bullets: 0,
+        categories: new Map(),
+      }
+      tier1.push(day)
+      section = null
+      continue
+    }
+    if (!day) continue
+    const cat = categoryOf(line)
+    if (cat) {
+      section = cat
+      if (!day.categories.has(cat)) day.categories.set(cat, 0)
+      continue
+    }
+    if (!line.trim().startsWith("- ")) continue
+    day.bullets++
+    if (section) day.categories.set(section, day.categories.get(section) + 1)
+  }
+
+  return { tier1, aged: agedEntries(lines.slice(end)) }
+}
+
+/** The same census for changelog-archive.md, plus the `--shed-year` pointer if present. */
+export function summarizeArchive(md) {
+  const lines = md.split("\n")
+  const years = lines.find((l) => l.startsWith("> Earlier years:")) ?? null
+  return { ...agedEntries(lines), years }
+}
+
 // ---------------------------------------------------------------------------
 // IO helpers
 // ---------------------------------------------------------------------------
@@ -535,8 +628,7 @@ function printLintWarnings(fragments) {
     for (const w of f.warnings) console.warn(`[collect-changelog] lint ${f.name}: ${w}`)
 }
 
-const bulletCount = (blocks) =>
-  blocks.reduce((sum, b) => sum + b.rawLines.filter((l) => l.trim().startsWith("- ")).length, 0)
+const bulletCount = (blocks) => countBullets(blocks.flatMap((b) => b.rawLines))
 
 /**
  * Every content line already sitting under a Tier-1 day heading for `date`
@@ -668,19 +760,299 @@ function runCheck() {
   return 0
 }
 
-function main() {
-  const argv = process.argv.slice(2)
-  const flags = new Set(argv)
-  for (const a of argv) {
-    if (!["--dry-run", "--check", "-h", "--help"].includes(a)) {
-      console.error(`[collect-changelog] unknown argument ${a}`)
-      console.error("Usage: collect-changelog.mjs [--dry-run | --check]")
-      return 2
+// ---------------------------------------------------------------------------
+// --report
+// ---------------------------------------------------------------------------
+
+/**
+ * Cadence facts from git, or null when git can't answer — not installed, not a
+ * repo, no commits yet. The section is optional on purpose: the rest of the
+ * report is a pure filesystem census and must still print without it.
+ *
+ * Every time window is applied BY GIT. This script does no date arithmetic (see
+ * the ISO-strings rule) — it hands `--since` to git verbatim and then only ever
+ * compares the `YYYY-MM-DD` strings git prints back, as strings.
+ */
+function gitCadence(since) {
+  const git = (...args) => {
+    try {
+      return execFileSync("git", args, {
+        cwd: ROOT,
+        encoding: "utf8",
+        timeout: 10_000,
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .split("\n")
+        .filter((l) => l !== "")
+    } catch {
+      return null
     }
   }
+
+  if (git("rev-parse", "--is-inside-work-tree")?.[0] !== "true") return null
+
+  // A day counts as active only if something OTHER than the changelog's own files
+  // changed that day: a fold or a condense is bookkeeping, not work needing an entry.
+  const own = [
+    `:(exclude)${CHANGELOG_PATH}`,
+    `:(exclude)${FRAGMENT_DIR}`,
+    `:(exclude)${ARCHIVE_PATH}`,
+    ":(exclude,glob)docs/changelog-archive-*.md",
+  ]
+  const fmt = ["--date=short", "--pretty=%ad"]
+  const active = git("log", `--since=${since}`, "--no-merges", ...fmt, "--", ".", ...own)
+  if (active === null) return null
+
+  // --diff-filter=M: only commits that MODIFIED the file. The commit that first
+  // adds it is the installer, not a fold — without this, a fresh install reports
+  // itself as the most recent fold and condense, which is exactly backwards. What
+  // is left is a fold (or a condense) by definition: nothing else writes these.
+  const writes = (path, ...extra) =>
+    git("log", "--diff-filter=M", ...extra, ...fmt, "--", path) ?? []
+  return {
+    since,
+    commits: active.length,
+    activeDays: [...new Set(active)].sort().reverse(),
+    folds: writes(CHANGELOG_PATH, `--since=${since}`).length,
+    lastFold: writes(CHANGELOG_PATH, "-1")[0] ?? null,
+    lastCondense: writes(ARCHIVE_PATH, "-1")[0] ?? null,
+  }
+}
+
+/** Map<label, count> → a plain object, so the JSON shape is stable and ordered. */
+const tally = (pairs) => {
+  const out = {}
+  for (const label of CATEGORY_ORDER) if (pairs.get(label)) out[label] = pairs.get(label)
+  return out
+}
+
+const sumInto = (target, source) => {
+  for (const [k, v] of source) target.set(k, (target.get(k) ?? 0) + v)
+  return target
+}
+
+/**
+ * The whole census as one plain object — the `--json` payload, and the input the
+ * text renderer formats. Structured first so a target repo can trend the numbers
+ * in CI instead of eyeballing them.
+ */
+function buildReport({ changelogMd, archiveMd, since }) {
+  const { fragments, skipped } = readFragments()
+  const { tier1, aged } = summarizeChangelog(changelogMd)
+  const archive =
+    archiveMd === null ? { days: [], ranges: [], years: null } : summarizeArchive(archiveMd)
+
+  const pendingCats = new Map()
+  for (const f of fragments)
+    for (const b of f.blocks)
+      pendingCats.set(b.category, (pendingCats.get(b.category) ?? 0) + countBullets(b.rawLines))
+
+  const tier1Cats = new Map()
+  for (const d of tier1) sumInto(tier1Cats, d.categories)
+
+  const report = {
+    pending: {
+      foldable: fragments.length,
+      unfoldable: skipped,
+      dates: [...new Set(fragments.map((f) => f.date))].sort().reverse(),
+      bullets: fragments.reduce((n, f) => n + bulletCount(f.blocks), 0),
+      categories: tally(pendingCats),
+      lintWarnings: fragments.reduce((n, f) => n + f.warnings.length, 0),
+    },
+    tier1: {
+      days: tier1.length,
+      legacyHeadings: tier1.filter((d) => !d.canonical).length,
+      dates: tier1.map((d) => d.date).filter((d) => d !== null),
+      bullets: tier1.reduce((n, d) => n + d.bullets, 0),
+      categories: tally(tier1Cats),
+    },
+    aged: {
+      summaryDays: aged.days,
+      summaryRanges: aged.ranges,
+      archiveDays: archive.days,
+      archiveRanges: archive.ranges,
+      shedYears: archive.years,
+    },
+    problems: auditChangelog(changelogMd),
+    coverage: null,
+  }
+
+  const git = gitCadence(since)
+  if (git) {
+    // Everything that documents a day, from any tier: a day covered by a Tier-3
+    // week-range is documented even though no per-day heading names it.
+    const documented = new Set([
+      ...report.pending.dates,
+      ...report.tier1.dates,
+      ...aged.days,
+      ...archive.days,
+    ])
+    const ranges = [...aged.ranges, ...archive.ranges]
+    const undocumented = git.activeDays.filter(
+      (d) => !documented.has(d) && !ranges.some(([from, to]) => from <= d && d <= to)
+    )
+    report.coverage = { ...git, undocumentedDays: undocumented }
+  }
+  return report
+}
+
+const span = (dates) => {
+  const s = [...dates].filter(Boolean).sort()
+  if (s.length === 0) return ""
+  return s.length === 1 ? s[0] : `${s[s.length - 1]} → ${s[0]}`
+}
+
+const listed = (xs, max = 8) =>
+  xs.length <= max ? xs.join(", ") : `${xs.slice(0, max).join(", ")}, +${xs.length - max} more`
+
+/** One terminal line's worth. The untruncated text is always in --json. */
+const brief = (s, max = 76) => (s.length > max ? `${s.slice(0, max - 1)}…` : s)
+
+const catNote = (cats) =>
+  Object.entries(cats)
+    .map(([k, v]) => `${k} ${v}`)
+    .join(", ")
+
+function formatReport(r) {
+  const out = ["[collect-changelog] report — read-only, nothing written.", ""]
+  const row = (label, value, note = "") =>
+    out.push(`  ${label.padEnd(20)}${String(value).padStart(5)}  ${note}`.trimEnd())
+  const section = (title) => out.push(title)
+
+  section(`Pending fragments (${FRAGMENT_DIR})`)
+  row("foldable", r.pending.foldable, span(r.pending.dates))
+  row("unfoldable", r.pending.unfoldable.length)
+  for (const s of r.pending.unfoldable) out.push(`    - ${brief(`${s.name}: ${s.reason}`)}`)
+  row("bullets", r.pending.bullets, catNote(r.pending.categories))
+  row("lint warnings", r.pending.lintWarnings, r.pending.lintWarnings
+    ? "bullets missing a **bold subject** or an anchor link"
+    : "")
+  out.push("")
+
+  section(`Tier 1 — full detail (${CHANGELOG_PATH})`)
+  row("day blocks", r.tier1.days, span(r.tier1.dates))
+  // Legacy bullets under a `## DATE` with no `### Category` above them belong to
+  // the day but to no section — call that out rather than let the columns disagree.
+  const loose = r.tier1.bullets - Object.values(r.tier1.categories).reduce((a, b) => a + b, 0)
+  const looseNote = loose ? ` (+${loose} uncategorized)` : ""
+  row("bullets", r.tier1.bullets, catNote(r.tier1.categories) + looseNote)
+  if (r.tier1.legacyHeadings)
+    row("legacy headings", r.tier1.legacyHeadings, "kept verbatim by the migrator")
+  out.push("")
+
+  section("Aged out")
+  row("summary days", r.aged.summaryDays.length, span(r.aged.summaryDays))
+  row("summary ranges", r.aged.summaryRanges.length, span(r.aged.summaryRanges.flat()))
+  row("archive entries", r.aged.archiveDays.length, span(r.aged.archiveDays))
+  if (r.aged.shedYears) row("shed years", "", r.aged.shedYears.replace(/^> Earlier years:\s*/, ""))
+  out.push("")
+
+  section("Structure")
+  if (r.problems.length === 0) row("problems", 0, "Tier-1 zone intact")
+  else {
+    row("problems", r.problems.length, "--check reports these as a failure")
+    for (const p of r.problems) out.push(`    - ${p}`)
+  }
+  out.push("")
+
+  if (!r.coverage) {
+    section("Capture coverage")
+    row("unavailable", "", "git could not read this tree (not a repo, or no commits yet)")
+    return out.join("\n")
+  }
+
+  const c = r.coverage
+  section(`Capture coverage (git, since ${c.since})`)
+  const own = "commit(s) outside the changelog's own files"
+  row("active days", c.activeDays.length, `${c.commits} ${own}`)
+  row("documented", c.activeDays.length - c.undocumentedDays.length)
+  row("undocumented", c.undocumentedDays.length, listed(c.undocumentedDays))
+  row("folds", c.folds, c.lastFold ? `last ${c.lastFold}` : "")
+  row("last condense", "", c.lastCondense ?? "never")
+
+  if (c.undocumentedDays.length) {
+    out.push("")
+    out.push(
+      "  Those days had work but no entry in any tier. This is the one gap nothing else",
+      "  reports — a fragment nobody wrote raises no error and leaves no trace, so it can",
+      "  only show up as a ratio like this one. Check whether those sessions ran the",
+      "  changelog step at all."
+    )
+  }
+  return out.join("\n")
+}
+
+/**
+ * Read-only dashboard. Always exit 0 once it can read the files — printing a
+ * problem is the job, not a verdict; `--check` is the gate, and having two
+ * commands both fail CI over the same condition would just make one redundant.
+ */
+function runReport({ json, since }) {
+  requireFragmentDir()
+
+  let changelogMd
+  try {
+    changelogMd = readFileSync(changelogPath, "utf8")
+  } catch {
+    console.error(
+      `[collect-changelog] ${CHANGELOG_PATH} is missing under ${ROOT} — there is nothing to ` +
+        `report on. Re-run the changelog-fragments installer.`
+    )
+    return 1
+  }
+  let archiveMd = null
+  try {
+    archiveMd = readFileSync(archivePath, "utf8")
+  } catch {
+    // Absent archive = nothing has aged out yet, which is a normal young repo.
+  }
+
+  const report = buildReport({ changelogMd, archiveMd, since })
+  console.log(json ? JSON.stringify(report, null, 2) : formatReport(report))
+  return 0
+}
+
+const USAGE =
+  "Usage: collect-changelog.mjs [--dry-run | --check | --report [--json] [--since <git-date>]]"
+
+function main() {
+  const argv = process.argv.slice(2)
+  const flags = new Set()
+  let since = "30.days"
+
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === "--since") {
+      const v = argv[++i]
+      if (v === undefined || v.startsWith("--")) {
+        console.error("[collect-changelog] --since needs a value (any git date expression)")
+        console.error(USAGE)
+        return 2
+      }
+      since = v
+      continue
+    }
+    if (!["--dry-run", "--check", "--report", "--json", "-h", "--help"].includes(a)) {
+      console.error(`[collect-changelog] unknown argument ${a}`)
+      console.error(USAGE)
+      return 2
+    }
+    flags.add(a)
+  }
+
   if (flags.has("-h") || flags.has("--help")) {
     console.log(readFileSync(SELF, "utf8").split("*/")[0].replace(/^#!.*\n/, ""))
     return 0
+  }
+  if (flags.has("--report")) return runReport({ json: flags.has("--json"), since })
+  // Silently ignoring a modifier is how someone ends up trusting a fold they think
+  // they scoped: say the flag did nothing rather than pretend it did something.
+  for (const a of ["--json", "--since"]) {
+    if (flags.has(a) || (a === "--since" && argv.includes(a))) {
+      console.error(`[collect-changelog] ${a} is only meaningful with --report`)
+      console.error(USAGE)
+      return 2
+    }
   }
   if (flags.has("--check")) return runCheck()
   return runFold({ dryRun: flags.has("--dry-run") })
