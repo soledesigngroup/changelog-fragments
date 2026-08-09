@@ -1928,6 +1928,122 @@ group("condense --auto", () => {
   })
 })
 
+group("condense keeps the archive in date order", () => {
+  // The archive already holds 07-10 from an earlier condense, while the summary
+  // zone still carries an older 07-05 whose detail was never archived (the
+  // pre-1.1 shape). One run archives both a NEWER date verbatim and that OLDER
+  // one, so a batch inserted as a single block lands 07-05 above 07-10.
+  const orderingRepo = (arTail) => {
+    const dir = newRepo({ "package.json": '{\n  "name": "ordering"\n}\n' })
+    install(dir)
+    write(
+      dir,
+      "docs/changelog.md",
+      [
+        "# Changelog", "", "---", "",
+        "## 2026-08-07", "", "### Added", "- **Fresh** — Tier 1 keeps this.", "",
+        "---", "",
+        "## 2026-07-30", "", "### Changed", "- **Aging out** — full detail archives verbatim.", "",
+        "---", "",
+        "## Earlier Changes (Summary)", "",
+        "### 2026-07-05",
+        "- **Summary only** — its detail predates the verbatim archive.", "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)", "",
+      ].join("\n")
+    )
+    write(
+      dir,
+      "docs/changelog-archive.md",
+      [
+        "# Changelog Archive", "",
+        "Full per-day detail for entries that have aged out of `docs/changelog.md`. Newest at top.",
+        "", "---", "",
+        "### 2026-07-10", "- **Mid July** — archived by an earlier run.", "",
+        ...arTail,
+      ].join("\n")
+    )
+    return dir
+  }
+
+  const arDates = (s) => s.split("\n").filter((l) => /^### \d{4}-/.test(l)).map((l) => l.slice(4).trim())
+
+  test("a date older than the archive's newest is placed by date, not on top", () => {
+    const repo = orderingRepo(["### 2026-06-01", "- **June one** — detail.", ""])
+    const r = condense(repo, ["--auto", "--today", "2026-08-09"])
+    assert.equal(r.status, 0, r.out)
+
+    const ar = read(repo, "docs/changelog-archive.md")
+    assert.deepEqual(
+      arDates(ar),
+      ["2026-07-30", "2026-07-10", "2026-06-01", "2026-07-05"].sort().reverse(),
+      ar
+    )
+    assert.ok(ar.includes("- **Aging out** — full detail archives verbatim."), "verbatim detail")
+    assert.ok(ar.includes("_Summary only — the full detail predates the verbatim archive._"), ar)
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("the oldest entry lands above the archive's trailing pointer, not below it", () => {
+    const repo = orderingRepo([
+      "> Earlier years: [2025](changelog-archive-2025.md)", "",
+      "_Nothing archived yet — `/changelog-condense` inserts per-day entries above this line, newest first._",
+      "",
+    ])
+    const r = condense(repo, ["--auto", "--today", "2026-08-09"])
+    assert.equal(r.status, 0, r.out)
+
+    const ar = read(repo, "docs/changelog-archive.md")
+    assert.deepEqual(arDates(ar), ["2026-07-30", "2026-07-10", "2026-07-05"], ar)
+    const lines = ar.split("\n").filter((l) => l.trim() !== "")
+    assert.match(lines.at(-1), /^_Nothing archived yet/, ar)
+    assert.match(lines.at(-2), /^> Earlier years:/, ar)
+    assert.ok(
+      ar.indexOf("### 2026-07-05") < ar.indexOf("> Earlier years:"),
+      "the oldest entry belongs above the notes that describe the file"
+    )
+  })
+
+  test("N: a manual --ar-content insert that un-sorts the archive aborts", () => {
+    const repo = orderingRepo(["### 2026-06-01", "- **June one** — detail.", ""])
+    // Anchored above 07-10, but older than it — the archive would read 07-30,
+    // 06-15, 07-10, 06-01. Nothing is lost, so only the order check can catch it.
+    write(repo, "ar-new.md", "### 2026-06-15\n- **Mid June** — misplaced.\n")
+    write(
+      repo,
+      "cl-mid.md",
+      "### 2026-07-30\n- **Aging out** — summarized.\n\n### 2026-07-05\n- **Summary only** — kept.\n"
+    )
+    assertCheckFails(
+      condense(repo, [
+        "--changelog", "docs/changelog.md",
+        "--cl-start", "## 2026-07-30",
+        "--cl-end", "> Full per-day details available in",
+        "--cl-mid", "cl-mid.md",
+        "--archive", "docs/changelog-archive.md",
+        "--ar-before", "### 2026-07-10",
+        "--ar-content", "ar-new.md",
+      ]),
+      "N"
+    )
+  })
+
+  test("an archive that arrives out of order is left alone, not rejected", () => {
+    const repo = orderingRepo(["### 2026-06-01", "- **June one** — detail.", ""])
+    const ar = read(repo, "docs/changelog-archive.md")
+    write(
+      repo,
+      "docs/changelog-archive.md",
+      ar.replace(
+        "### 2026-07-10\n- **Mid July** — archived by an earlier run.\n",
+        "### 2026-05-02\n- **May two** — out of order already.\n\n### 2026-07-10\n- **Mid July** — archived by an earlier run.\n"
+      )
+    )
+    const r = condense(repo, ["--auto", "--today", "2026-08-09"])
+    assert.equal(r.status, 0, r.out)
+    assert.ok(read(repo, "docs/changelog-archive.md").includes("- **May two** — out of order already."))
+  })
+})
+
 group("condense --shed-year", () => {
   test("moves the oldest year into its own file, verified", () => {
     const repo = midlifeRepo()

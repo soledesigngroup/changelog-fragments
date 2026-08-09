@@ -12,7 +12,40 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.3.0`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.3.1`.
+
+---
+
+## [1.3.1] — 2026-08-09
+
+**Upgrade: recommended — re-run `install.mjs`. Safe on an existing installation**; no anchor,
+category, or flag behaviour changed. An archive an earlier run already left out of order is not
+rewritten — see below.
+
+### Fixed
+
+- **A condense could leave `changelog-archive.md` out of date order.** `insertIntoArchive` put the
+  whole batch above the newest existing heading. That is right for the verbatim auto-archive, whose
+  dates are always newer than everything archived, but the pre-1.1 summary-only path archives
+  *summary-zone* dates, which can be older than entries an earlier run already wrote — so those
+  landed above entries that predate them. Entries are now placed individually by date, and one
+  older than all of them lands above the archive's trailing notes (`> Earlier years:`, the seeded
+  placeholder) rather than below them. No content was ever lost to this; the ordering was.
+- **`--shed-year` was the reason it mattered.** It slices from the first heading of a year through
+  EOF and trusts years to be contiguous, so a misplaced older-year entry would have carried every
+  newer year into the shed file. Unreachable in practice before now, since only the summary-only
+  path can insert out of order and it had never met a multi-year archive.
+
+### Added
+
+- **Check N** — a run that takes a descending archive and returns a non-descending one aborts.
+  Deliberately a regression check, not a format rule: an archive that arrives out of order passes
+  untouched, because re-sorting a file this system didn't scramble is editing history. It also
+  covers the manual `--ar-before` / `--ar-content` path, whose anchor is taken literally.
+
+Repos condensed before this release may have an out-of-order archive. It is cosmetic — `--report`
+reads archive entries as a set and `--check` doesn't read the archive at all — but sort it before
+the first `--shed-year` on a multi-year archive.
 
 ---
 

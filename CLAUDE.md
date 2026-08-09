@@ -48,7 +48,7 @@ group whose fixture they need rather than at the end of the file.
 
 Tests install into throwaway `mkdtemp` dirs and shell out to the real scripts, so a template edit is
 covered end-to-end without a separate fixture to update. Failing paths matter as much as happy ones:
-every condense check (A–K) has a test that makes it fire, and `assertCheckFails` asserts the specific
+every condense check (A–N) has a test that makes it fire, and `assertCheckFails` asserts the specific
 check ID, because a bare "it exited non-zero" also passes when the script has a syntax error.
 
 ## Invariants
@@ -117,7 +117,7 @@ whole file — with `--check` reporting "structure intact". Only the rule's inse
 legacy zone stays opaque, because repointing `firstDay` there makes the day-block loop throw on the
 content above it.
 
-**The condense helper writes nothing unless checks A–M pass.** `template/scripts/condense-changelog.mjs`
+**The condense helper writes nothing unless checks A–N pass.** `template/scripts/condense-changelog.mjs`
 does everything mechanical; verification isn't skippable and has no `--force`. If you add an
 operation, add its check. `--plan` is the read-only counterpart: it computes the tier boundaries and
 anchors so the model never has to, and it must stay side-effect-free. `--auto --today <DATE>` derives
@@ -153,6 +153,18 @@ count and content lines conserved) — before this, a condense on a migrated Kee
 would have silently deleted the whole legacy history, since the model was never told those blocks
 were inside the region. `--ar-content` is transition-only now: `--plan` requests it solely for
 summary-section dates collapsing whose detail was never archived (pre-1.1 condense flows).
+
+**The archive stays in descending date order, and entries are placed one by one.** `insertIntoArchive`
+positions each entry against the existing headings rather than dropping the batch above the newest
+one. The verbatim auto-archive always supplies dates newer than everything archived, so a batch insert
+looked right for years — but the pre-1.1 summary-only path archives *summary-zone* dates, which can be
+older than entries an earlier run already wrote. That put them above entries predating them, and
+`--shed-year` reads the order as authoritative: it slices from the first heading of a year through EOF
+and trusts years to be contiguous, so one misplaced older-year entry would carry every newer year into
+the shed file. An entry older than all of them lands above the archive's trailing notes (the
+`> Earlier years:` pointer, the seeded placeholder), which describe the file rather than any entry.
+Check N is the guard, and it's a *regression* check on purpose — an archive that arrives out of order
+is left alone, because re-sorting a file this system didn't scramble is editing history.
 
 **Dates are ISO strings, compared lexicographically.** No `Date` object, no timezone handling, no
 arithmetic — with one carve-out of exactly two functions in `condense-changelog.mjs`: `shiftDays()`

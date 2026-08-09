@@ -40,7 +40,7 @@ from the entries' own retrieval keys (the **bold subject**, first anchor link, a
 that the fragment lint enforces and future greps find), archives detail verbatim, extends a partial
 week's existing range instead of laying a second one beside it, drops aged ranges, sheds an
 oversized archive's oldest completed year into `changelog-archive-<YYYY>.md`, and runs the full
-A–M verification suite. It writes nothing unless every check passes. `--today` is required — the
+A–N verification suite. It writes nothing unless every check passes. `--today` is required — the
 clock is never read.
 
 Prefer this path. Hand-written summaries buy slightly nicer prose in exchange for temp files and a

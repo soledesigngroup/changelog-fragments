@@ -28,10 +28,11 @@
  *      per-day summaries — older than --drop-ranges-before (archive-only age).
  *   2. (Verbatim auto-archive) Every full-detail `## DATE` block the splice
  *      removes is moved into the archive by THIS script, byte-for-byte, as a
- *      per-day `### DATE` entry (newest first, above the existing entries). The
- *      model never re-types detail, the archive genuinely holds the full text of
- *      every entry that has aged out of Tier 1, and grepping the docs/ tree finds
- *      history verbatim instead of a paraphrase. Verified — Check J.
+ *      per-day `### DATE` entry, each placed by date so the archive stays newest
+ *      first (Check N). The model never re-types detail, the archive genuinely
+ *      holds the full text of every entry that has aged out of Tier 1, and
+ *      grepping the docs/ tree finds history verbatim instead of a paraphrase.
+ *      Verified — Check J.
  *   3. (Legacy block re-emit) A `##` heading with no ISO date (`## [1.2.0]`,
  *      `## [Unreleased]`) that the splice region swallows is re-emitted above the
  *      new content by the script itself, so a migrated Keep-a-Changelog history
@@ -40,6 +41,8 @@
  *      --ar-before. Only needed for summary-section dates collapsing into
  *      week-ranges whose detail was never archived — i.e. changelogs condensed
  *      under the pre-1.1 flow, where Tier-2 summarization discarded the detail.
+ *      The anchor is taken literally, so Check N catches one that would leave the
+ *      archive out of date order.
  *   5. (Tier 4 drop) With --drop-ranges-before <DATE>, removes trailing week-range
  *      blocks whose END date is older than <DATE> from the changelog entirely.
  *      Their per-day detail already lives in the archive (verified — Check H), so
@@ -439,28 +442,72 @@ function assembleRegion(regionText, midText, beforeText, fails, { removeDaysBefo
 }
 
 /**
- * Insert `entries` at the top of the archive's date zone: above the newest
- * existing date heading, else above the seeded placeholder note, else below the
- * header rule. An absent archive gets a minimal header so the first condense of
- * a repo that never had one still lands somewhere sensible.
+ * Insert dated `entries` into the archive, newest at top, each placed by date.
+ *
+ * `entries` is a [date, text][]; each text is a complete `### DATE\n\n…\n\n---\n\n`
+ * block. Placement is per entry, not per batch: the verbatim auto-archive path
+ * always supplies dates newer than everything already archived, but the pre-1.1
+ * summary-only path (`buildAutoArchiveExtras`) archives summary-zone dates that
+ * can be OLDER than existing entries. Dropping the whole batch above the newest
+ * heading put those older dates above entries that predate them, leaving the
+ * archive non-descending — which `--shed-year` then mis-reads, since it slices
+ * from the first heading of a year through EOF and trusts years to be contiguous.
+ *
+ * An entry older than every existing one lands below the last entry but above the
+ * archive's trailing notes (the "Earlier years" pointer, the seeded placeholder),
+ * which belong to the file rather than to any entry. An archive with no date
+ * headings yet seeds at the top of the date zone; an absent one gets a minimal
+ * header so the first condense of a repo that never had an archive still lands
+ * somewhere sensible.
  */
 function insertIntoArchive(arText, entries) {
+  const sorted = [...entries].sort((a, b) => (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0))
+  const body = sorted.map(([, text]) => text).join("")
+  if (!body) return arText
+
   if (!arText.trim()) {
     return (
       "# Changelog Archive\n\nFull per-day detail for entries that have aged out of " +
-      "`docs/changelog.md`. Newest at top.\n\n---\n\n" + entries
+      "`docs/changelog.md`. Newest at top.\n\n---\n\n" + body
     )
   }
-  const first = [...arText.matchAll(reAnyHeading())][0]
-  if (first) return arText.slice(0, first.index) + entries + arText.slice(first.index)
-  const ph = arText.match(/^[ \t]*_Nothing archived[^\n]*/m)
-  if (ph) return arText.slice(0, ph.index) + entries + arText.slice(ph.index)
-  const hr = arText.match(/^-{3,}[ \t]*$/m)
-  if (hr) {
-    const at = hr.index + hr[0].length
-    return arText.slice(0, at) + "\n\n" + entries.replace(/\n+$/, "\n") + arText.slice(at)
+  if ([...arText.matchAll(reAnyHeading())].length === 0) {
+    const ph = arText.match(/^[ \t]*_Nothing archived[^\n]*/m)
+    if (ph) return arText.slice(0, ph.index) + body + arText.slice(ph.index)
+    const hr = arText.match(/^-{3,}[ \t]*$/m)
+    if (hr) {
+      const at = hr.index + hr[0].length
+      return arText.slice(0, at) + "\n\n" + body.replace(/\n+$/, "\n") + arText.slice(at)
+    }
+    return arText.replace(/\n*$/, "\n\n") + body
   }
-  return arText.replace(/\n*$/, "\n\n") + entries
+
+  // Newest first, so each insert only ever scans an archive whose head is already
+  // settled. A range heading compares on its start date, as everywhere else.
+  let out = arText
+  for (const [date, text] of sorted) {
+    const below = [...out.matchAll(reAnyHeading())].find((m) => m[1] < date)
+    out = below
+      ? out.slice(0, below.index) + text + out.slice(below.index)
+      : appendBelowLastEntry(out, text)
+  }
+  return out
+}
+
+/**
+ * Append `text` below the archive's last entry but above any trailing note lines.
+ * Only a trailing run of blanks and note lines (`_italic_`, `> pointer`) is
+ * peeled — never a `---` or a body line, so an entry can't be spliced into the
+ * middle of the block above it.
+ */
+function appendBelowLastEntry(arText, text) {
+  const lines = arText.split("\n")
+  let cut = lines.length
+  while (cut > 0 && (lines[cut - 1].trim() === "" || /^[ \t]*[_>]/.test(lines[cut - 1]))) cut--
+  const tail = lines.slice(cut)
+  if (!tail.some((l) => /^[ \t]*[_>]/.test(l))) return arText.replace(/\n*$/, "\n\n") + text
+  const head = lines.slice(0, cut).join("\n").replace(/\n+$/, "")
+  return `${head}\n\n${text}${tail.join("\n").replace(/^\n+/, "")}`
 }
 
 /**
@@ -1340,7 +1387,7 @@ function main() {
     autoArchived = uniqSorted([...byDate.keys()]).reverse()
     newAr = insertIntoArchive(
       newAr,
-      autoArchived.map((d) => `### ${d}\n\n${byDate.get(d).join("\n\n")}\n\n---\n\n`).join("")
+      autoArchived.map((d) => [d, `### ${d}\n\n${byDate.get(d).join("\n\n")}\n\n---\n\n`])
     )
     const lost = (date, l) =>
       fails.push(`J: auto-archive lost a line of '${date}': ${JSON.stringify(l.slice(0, 60))}`)
@@ -1452,6 +1499,23 @@ function main() {
           )
       }
     }
+  }
+
+  // --- Check N (the run never un-sorts the archive) ---
+  // A regression guard, not a format rule: an archive that arrives out of order
+  // stays the operator's business, but a run that takes a descending archive and
+  // returns a non-descending one has mis-placed what it inserted, and --shed-year
+  // reads that order as authoritative.
+  const descending = (text) => {
+    const keys = [...text.matchAll(reAnyHeading())].map((m) => m[1])
+    return keys.every((k, i) => i === 0 || keys[i - 1] >= k)
+  }
+  for (const [label, before, after] of [
+    ["archive", oldAr, newAr],
+    ...(shed ? [[shed.yearPath, "", shed.yearText]] : []),
+  ]) {
+    if (!descending(after) && descending(before))
+      fails.push(`N: ${label} is no longer in descending date order after this run`)
   }
 
   if (fails.length) return abort(fails)
