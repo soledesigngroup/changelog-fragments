@@ -81,8 +81,13 @@ const lockPath = join(fragmentDir, ".fold.lock")
 // Fold logic (pure — no IO)
 // ---------------------------------------------------------------------------
 
-/** Canonical section order within a day (matches the changelog-update command). */
-const CATEGORY_ORDER = ["Added", "Changed", "Deprecated", "Fixed", "Removed", "Security"]
+/**
+ * Canonical section order within a day — THE category vocabulary, single source.
+ * The installer substitutes it into every doc that lists the categories
+ * ({{CATEGORIES}} / {{CATEGORIES_BOLD}}), so adding one here propagates; only
+ * this comment and the fold's refusal message live outside that substitution.
+ */
+export const CATEGORY_ORDER = ["Added", "Changed", "Deprecated", "Fixed", "Removed", "Security"]
 
 const CATEGORY_LABEL = new Map(CATEGORY_ORDER.map((c) => [c.toLowerCase(), c]))
 

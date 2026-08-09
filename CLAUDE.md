@@ -33,6 +33,7 @@ In an installed repo, the payload's own entry points:
 
 ```bash
 node scripts/collect-changelog.mjs [--dry-run|--check|--report [--json] [--since <git-date>]]
+node scripts/condense-changelog.mjs --auto --today $(date +%F) [--dry-run]   # deterministic condense
 node scripts/condense-changelog.mjs --changelog … --archive … --plan --today $(date +%F)
 ```
 
@@ -64,9 +65,11 @@ rewriting there.
 **The fold never discards a line it can't place.** Anything other than blanks, a stray `---`, or a
 stray `## DATE` header outside a canonical `### Category` block makes `extractFragmentBlocks` throw
 `FragmentError`; the CLI then reports the fragment, **leaves it on disk**, and exits non-zero. The six
-canonical categories (`CATEGORY_ORDER`) are the whole accepted vocabulary — an unknown `### heading`
-used to get swallowed into the block above it, which silently misfiled or destroyed entries. If you
-add a category, add it there and to all four docs that list them.
+canonical categories (`CATEGORY_ORDER`, exported) are the whole accepted vocabulary — an unknown
+`### heading` used to get swallowed into the block above it, which silently misfiled or destroyed
+entries. The docs that list the categories do so via `{{CATEGORIES}}` / `{{CATEGORIES_BOLD}}`
+placeholders the installer fills from that array, so adding a category means changing
+`CATEGORY_ORDER` and re-running the installer — not a four-doc sync.
 
 **Only one fold runs at a time, and it writes atomically.** The fold takes `docs/changelog.d/.fold.lock`
 via `wx` (atomic create-or-fail, reclaimed if the holder pid is gone) and writes `changelog.md` through
@@ -114,11 +117,32 @@ whole file — with `--check` reporting "structure intact". Only the rule's inse
 legacy zone stays opaque, because repointing `firstDay` there makes the day-block loop throw on the
 content above it.
 
-**The condense helper writes nothing unless checks A–K pass.** `template/scripts/condense-changelog.mjs`
-does the mechanical splice; the *model* supplies the summary prose via temp files. Verification isn't
-skippable and has no `--force`. If you add an operation, add its check. `--plan` is the read-only
-counterpart: it computes the tier boundaries and anchors so the model never has to, and it must stay
-side-effect-free.
+**The condense helper writes nothing unless checks A–M pass.** `template/scripts/condense-changelog.mjs`
+does everything mechanical; verification isn't skippable and has no `--force`. If you add an
+operation, add its check. `--plan` is the read-only counterpart: it computes the tier boundaries and
+anchors so the model never has to, and it must stay side-effect-free. `--auto --today <DATE>` derives
+and executes the whole run with **generated** summaries (each bullet's bold subject + first anchor
+link + issue refs — exactly the keys the fragment lint enforces), so a condense needs no model at
+all; the manual `--cl-mid` flow remains for hand-written prose.
+
+**The splice region is assembled, and cl-mid carries only new text.** `assembleRegion` re-opens the
+summary sentinel, re-emits legacy blocks and any unchanged `### DATE` / `### X to Y` entries the
+region swallows, and sorts everything newest-first — cl-mid's order is irrelevant. An old entry
+leaves the region only for a stated reason: replaced by the same heading in cl-mid, collapsed into a
+range that covers it (Check C then demands its archive entry), or — per-day summaries only — older
+than `--drop-ranges-before`. Before this, an unchanged entry accidentally omitted from cl-mid
+vanished silently: its detail was already archived, so Check C passed and nothing else looked.
+Content cl-mid can't be parsed into placeable blocks is refused (Check M), and a splice refuses to
+run at all while fragments are pending in `docs/changelog.d/` (Check L) — fold-first is enforced,
+not requested; Tier-4-only and shed runs merely warn, since they never touch Tier 1.
+
+**`--auto`'s week-ranges use absolute buckets and extend in place.** A Tier-3 range is one per
+absolute calendar week (`weekBucket`, epoch-days ÷ 7 — deliberately not anchored to `--today`, so a
+date's bucket never changes between runs). When new days collapse into a week that already has a
+range, that range is *extended* — old body kept, new per-day subject lines appended, heading widened
+— instead of a second range accumulating beside it. Pre-1.1 summary dates whose detail was never
+archived are moved into the archive as-is, marked `_Summary only …_`, because that summary is the
+only text that still exists.
 
 **Summarization never destroys detail — the script moves it, verbatim.** Every full-detail `## DATE`
 block the splice removes is auto-archived byte-for-byte as a `### DATE` archive entry (Check J: no
@@ -131,11 +155,11 @@ were inside the region. `--ar-content` is transition-only now: `--plan` requests
 summary-section dates collapsing whose detail was never archived (pre-1.1 condense flows).
 
 **Dates are ISO strings, compared lexicographically.** No `Date` object, no timezone handling, no
-arithmetic — with exactly one carve-out: `shiftDays()` in `condense-changelog.mjs`, which `--plan` uses
-to turn `--today` into the tier cutoffs. It's safe on the invariant's own terms — the date arrives
-explicitly via `--today` (the clock is never read) and the math is `Date.UTC` + whole days, so there's
-no local midnight to land on the wrong side of. Don't grow a second one; entry comparison stays string
-comparison. `--report` needs a *time window* and still doesn't get a carve-out: `--since` is handed to
+arithmetic — with one carve-out of exactly two functions in `condense-changelog.mjs`: `shiftDays()`
+(turns `--today` into the tier cutoffs) and `weekBucket()` (`--auto`'s absolute week index). Both are
+safe on the invariant's own terms — the date arrives explicitly via `--today` or a heading (the clock
+is never read) and the math is pure `Date.UTC`, so there's no local midnight to land on the wrong
+side of. Don't grow the carve-out further; entry comparison stays string comparison. `--report` needs a *time window* and still doesn't get a carve-out: `--since` is handed to
 git verbatim, git does the windowing, and the script only ever compares the `YYYY-MM-DD` strings git
 prints back. Keep it that way — the moment the report parses a date it owns timezones forever.
 
@@ -159,7 +183,7 @@ a fold; without it a fresh install reports itself as the most recent fold.
 **Payload scripts are dependency-free ESM on node builtins only** (Node 18+), and stay importable:
 `collect-changelog.mjs` exports its fold helpers (`extractFragmentBlocks`,
 `mergeFragmentsIntoChangelog`, `auditChangelog`, `lintFragmentBlocks`, `fragmentDateFromFilename`,
-`FragmentError`) plus the read-only census `--report` renders (`summarizeChangelog`,
+`FragmentError`, `CATEGORY_ORDER`) plus the read-only census `--report` renders (`summarizeChangelog`,
 `summarizeArchive`), and guards the CLI as described above. `node:child_process` is imported for the
 one `git` shell-out in `--report`; it is the only subprocess either payload script spawns, every
 failure of it degrades to a dropped section, and nothing else may come to depend on git being present.
@@ -197,8 +221,9 @@ seeded markdown. Changing one means changing it in **all** of them plus the temp
 ## Template substitution
 
 `install.mjs` replaces `{{FOLD_CMD}}`, `{{FOLD_CMD_DRY}}`, `{{FOLD_CMD_DRY_INLINE}}`,
-`{{FOLD_CMD_CHECK}}`, `{{FOLD_CMD_REPORT}}`, and `{{PROJECT_NAME}}` when copying — but the two `.mjs`
-payload scripts are copied with `raw: true`,
+`{{FOLD_CMD_CHECK}}`, `{{FOLD_CMD_REPORT}}`, `{{PROJECT_NAME}}`, and the category-list pair
+`{{CATEGORIES}}` / `{{CATEGORIES_BOLD}}` (filled from the payload's exported `CATEGORY_ORDER`) when
+copying — but the two `.mjs` payload scripts are copied with `raw: true`,
 so a placeholder written into them ships through literally. The `{{FOLD_CMD}}` pair resolves to
 `npm run changelog:fold` or bare `node scripts/collect-changelog.mjs` depending on whether the target
 has a `package.json`; both branches are covered by tests.

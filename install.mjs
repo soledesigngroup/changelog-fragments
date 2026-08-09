@@ -21,8 +21,10 @@ import { fileURLToPath } from "node:url"
 
 import { migrateChangelog, isMigrated, MigrationError } from "./lib/migrate.mjs"
 // The payload's own audit, reused here so an install over a file this tool wrote
-// in an earlier version still says something when that layout is wrong.
-import { auditChangelog } from "./template/scripts/collect-changelog.mjs"
+// in an earlier version still says something when that layout is wrong — and its
+// category vocabulary, so every doc that lists the categories is substituted from
+// the one array the fold actually enforces.
+import { auditChangelog, CATEGORY_ORDER } from "./template/scripts/collect-changelog.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TEMPLATE = join(HERE, "template")
@@ -124,6 +126,9 @@ const SUBS = {
   "{{FOLD_CMD_CHECK}}": FOLD_CMD_CHECK,
   "{{FOLD_CMD_REPORT}}": FOLD_CMD_REPORT,
   "{{PROJECT_NAME}}": projectName,
+  // Both spellings of the category list the docs use, from the payload's array.
+  "{{CATEGORIES}}": CATEGORY_ORDER.join(" / "),
+  "{{CATEGORIES_BOLD}}": CATEGORY_ORDER.map((c) => `**${c}**`).join(", "),
 }
 
 function substitute(text) {
@@ -262,11 +267,11 @@ const alreadyDocumented =
 
 console.log("\nNext steps:")
 if (alreadyDocumented) {
-  console.log("  1. CLAUDE.md already mentions docs/changelog.d/ — check it matches the snippet below.")
+  console.log("  1. CLAUDE.md already mentions docs/changelog.d/ — check it matches this snippet:\n")
 } else {
   console.log("  1. Paste this into CLAUDE.md (replacing any existing Changelog section):\n")
-  console.log(snippet.replace(/^/gm, "     "))
 }
+console.log(snippet.replace(/^/gm, "     "))
 console.log(
   `  2. Point any commit/audit workflow docs at fragments instead of changelog.md\n` +
     `     (e.g. a /git-commit-push command that says "read docs/changelog.md").`

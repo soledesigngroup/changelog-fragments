@@ -3,18 +3,29 @@
  * Splice-and-verify helper for the /changelog-condense flow.
  *
  * Division of labor:
- *   - The MODEL does the judgment work: it writes the new Tier-2 / Tier-3 summary
- *     text to temp files (--cl-mid, optionally --ar-content).
- *   - THIS script does the mechanical move (so Tier-1 full-detail blocks are never
- *     re-typed by hand) and runs un-skippable verification. It writes nothing
- *     unless every check passes.
+ *   - With --auto, THERE IS NO JUDGMENT WORK: the whole run — tier boundaries,
+ *     Tier-2/3 summary text (built from each entry's **bold subject**, anchor
+ *     link, and issue refs), archival, Tier-4 drop, year shed — is derived
+ *     deterministically and verified by the same checks. This is the zero-input
+ *     path: `--auto --today YYYY-MM-DD`.
+ *   - Without --auto, the MODEL writes only the NEW summary prose (--cl-mid,
+ *     optionally --ar-content) and THIS script does everything mechanical: it
+ *     re-opens the sentinel, re-emits unchanged and legacy entries the region
+ *     swallows, orders everything newest-first, moves detail verbatim, and runs
+ *     un-skippable verification. It writes nothing unless every check passes.
  *
  * What it does:
- *   1. (Tier 2/3 splice) Replaces the changelog region from --cl-start (inclusive)
- *      through --cl-end (EXCLUSIVE) with the contents of --cl-mid. Everything
- *      before --cl-start (the Tier-1 full-detail entries) and from --cl-end onward
- *      (older week-ranges + footer) is preserved byte-for-byte. This group is
- *      optional; omit all three --cl-* flags on a Tier-4-only run.
+ *   1. (Tier 2/3 splice) Rebuilds the changelog region from --cl-start (inclusive)
+ *      through --cl-end (EXCLUSIVE): the NEW entries in --cl-mid plus everything
+ *      in the old region that isn't condensing this run — unchanged `### DATE` /
+ *      `### X to Y` entries and the summary sentinel are re-emitted by the script
+ *      itself (an entry missing from cl-mid used to vanish silently), sorted
+ *      newest-first. Everything before --cl-start (the Tier-1 full-detail entries)
+ *      and from --cl-end onward (older week-ranges + footer) is preserved
+ *      byte-for-byte. This group is optional; omit all three --cl-* flags on a
+ *      Tier-4-only run. An old entry leaves the region only for a stated reason:
+ *      replaced by key in cl-mid, collapsed into a covering range (Check C), or —
+ *      per-day summaries — older than --drop-ranges-before (archive-only age).
  *   2. (Verbatim auto-archive) Every full-detail `## DATE` block the splice
  *      removes is moved into the archive by THIS script, byte-for-byte, as a
  *      per-day `### DATE` entry (newest first, above the existing entries). The
@@ -42,6 +53,13 @@
  * Planning: --plan --today <DATE> writes nothing and prints which headings fall in
  * which tier plus the exact anchor/cutoff flags to use. Prefer it over working the
  * dates out by hand.
+ *
+ * Deterministic mode: --auto --today <DATE> derives the plan and executes it in one
+ * step with generated summaries — Tier-2 entries keep each bullet's subject + first
+ * anchor link + issue refs; Tier-3 ranges are one per absolute calendar week
+ * (extending a partial week's existing range instead of adding a second one) with
+ * per-day subject lines. Pre-1.1 summary-only dates are archived as-is, marked.
+ * Suitable for cron/CI. Refuses to run while fragments are pending (Check L).
  *
  * Other flags:
  *   --dry-run   run every check and print the same report, then stop without writing
@@ -104,6 +122,11 @@
  *      would duplicate it), and the auto-archive must conserve every line.
  *   K. Legacy `##` blocks with no ISO date survive any splice: same heading
  *      count as before, and every content line still present.
+ *   L. A splice refuses to run while fragments are pending in docs/changelog.d —
+ *      a fold-first ordering the command doc used to merely request. Tier-4-only
+ *      and shed runs warn instead (they never touch Tier 1).
+ *   M. --cl-mid (and the region itself) must parse into placeable blocks; content
+ *      sitting under no heading is refused rather than guessed at or dropped.
  *
  * Self-contained: no imports beyond node builtins, no build step, no deps.
  * Dates are compared as ISO strings (YYYY-MM-DD sorts lexicographically), so
@@ -113,7 +136,7 @@
  * Managed by changelog-fragments — re-run its install.mjs to update.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -141,8 +164,10 @@ const reAnyHeading = () =>
   /^#{2,3} (\d{4}-\d{2}-\d{2})(?: to (\d{4}-\d{2}-\d{2}))?[ \t]*$/gm
 
 const FOOTER = "> Full per-day details available in"
+const SENTINEL = "## Earlier Changes (Summary)"
 const SEP_BEFORE_SUMMARY = "---\n\n## Earlier Changes (Summary)"
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+const reSentinel = /^##\s+Earlier Changes/i
 
 /** Dates that appear as a single-day heading (## or ###), as a Set of strings. */
 function singleDates(text) {
@@ -237,6 +262,183 @@ function legacyBlocksIn(text) {
 }
 
 /**
+ * Parse a run of changelog text into the blocks the splice can place: full-detail
+ * days (`## DATE …`), legacy no-date `##` blocks, the summary sentinel, per-day
+ * summaries (`### DATE`), and week-ranges (`### X to Y`). A `### Category`
+ * heading belongs to the enclosing block's body, never to the top level.
+ *
+ * Content that sits under no block at all is unplaceable — it is reported as a
+ * Check M problem rather than silently attached to a neighbour or dropped.
+ * Blank lines and stray `---` rules between blocks are structural, not content.
+ */
+function parseRegionBlocks(text, label, problems) {
+  const blocks = []
+  let cur = null
+  const lines = text.split("\n")
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li]
+    if (/^##[ \t]/.test(line)) {
+      const day = line.match(/^##[ \t]+(\d{4}-\d{2}-\d{2})(?:[ \t].*)?$/)
+      if (day) cur = { kind: "h2day", date: day[1], heading: line.trimEnd(), body: [] }
+      else if (reSentinel.test(line)) cur = { kind: "sentinel", heading: SENTINEL, body: [] }
+      else cur = { kind: "legacy", heading: line.trimEnd(), body: [] }
+      blocks.push(cur)
+      continue
+    }
+    const range = line.match(/^### (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})[ \t]*$/)
+    if (range) {
+      cur = { kind: "range", from: range[1], to: range[2], heading: line.trim(), body: [] }
+      blocks.push(cur)
+      continue
+    }
+    const day = line.match(/^### (\d{4}-\d{2}-\d{2})[ \t]*$/)
+    if (day) {
+      cur = { kind: "day", date: day[1], heading: line.trim(), body: [] }
+      blocks.push(cur)
+      continue
+    }
+    if (cur) {
+      cur.body.push(line)
+      continue
+    }
+    if (line.trim() === "" || /^-{3,}\s*$/.test(line)) continue
+    problems.push(
+      `M: ${label} line ${li + 1}: content sits under no heading the splice can place: ` +
+        JSON.stringify(line.trim().slice(0, 60))
+    )
+  }
+  for (const b of blocks) stripTrailingJunk(b.body)
+  return blocks
+}
+
+/** Newest first: by a block's own (or end) date, single days above a range that ends the same day. */
+function byNewestFirst(a, b) {
+  const ka = a.kind === "range" ? a.to : a.date
+  const kb = b.kind === "range" ? b.to : b.date
+  if (ka !== kb) return ka < kb ? 1 : -1
+  if (a.kind !== b.kind) return a.kind === "day" ? -1 : 1
+  const sa = a.kind === "range" ? a.from : a.date
+  const sb = b.kind === "range" ? b.from : b.date
+  return sa < sb ? 1 : sa > sb ? -1 : 0
+}
+
+/** True when the last non-blank line of `text` is a `---` rule. */
+function endsWithRule(text) {
+  const lines = text.split("\n")
+  let i = lines.length - 1
+  while (i >= 0 && lines[i].trim() === "") i--
+  return i >= 0 && /^-{3,}\s*$/.test(lines[i])
+}
+
+/**
+ * Assemble the new splice region from the old region plus --cl-mid, so cl-mid
+ * only ever has to carry NEW summary text. Everything mechanical happens here:
+ *
+ *   - The sentinel is re-opened by this function whenever the old region held it
+ *     (a copy in cl-mid is deduplicated, and a mangled one is canonicalized).
+ *   - Legacy no-date blocks are re-emitted from the old region verbatim; a copy
+ *     in cl-mid wins so an author CAN restate one, and Check K verifies it.
+ *   - An unchanged `### DATE` / `### X to Y` entry the region swallows is
+ *     re-emitted verbatim instead of relying on the author to re-type it —
+ *     before this, an entry missing from cl-mid silently vanished (its detail
+ *     was archived, so no check fired, but the changelog lost its index line).
+ *   - Old entries leave the region only for a stated reason: replaced by the
+ *     same heading in cl-mid, collapsed into a range that covers them (Check C
+ *     then requires their archive entry), or — per-day summaries only — older
+ *     than `removeDaysBefore` (the Tier-4 cutoff: past it, a range would itself
+ *     be dropped, so the archive is the only home left).
+ *   - Blocks are ordered newest-first by this function; cl-mid's order is
+ *     irrelevant.
+ *
+ * Returns the assembled region text, or null after pushing onto `fails`.
+ */
+function assembleRegion(regionText, midText, beforeText, fails, { removeDaysBefore = null } = {}) {
+  const problems = []
+  const old = parseRegionBlocks(regionText, "changelog region", problems)
+  const mid = parseRegionBlocks(midText, "--cl-mid", problems)
+  if (problems.length) {
+    fails.push(...problems)
+    return null
+  }
+
+  const rangeKey = (b) => `${b.from} to ${b.to}`
+  const midRanges = mid.filter((b) => b.kind === "range")
+  const midRangeKeys = new Set(midRanges.map(rangeKey))
+  const midDayKeys = new Set(mid.filter((b) => b.kind === "day").map((b) => b.date))
+
+  // An old range survives unless cl-mid replaces it by key or reshapes it with an
+  // overlapping range (how --auto extends a partial week; Check B still guards
+  // an exact duplicate).
+  const keptOldRanges = old.filter(
+    (r) =>
+      r.kind === "range" &&
+      !midRangeKeys.has(rangeKey(r)) &&
+      !midRanges.some((m) => m.from <= r.to && r.from <= m.to)
+  )
+  const coverRanges = [...midRanges, ...keptOldRanges]
+  const keptOldDays = old.filter(
+    (b) =>
+      b.kind === "day" &&
+      !midDayKeys.has(b.date) &&
+      !coverRanges.some((r) => r.from <= b.date && b.date <= r.to) &&
+      !(removeDaysBefore !== null && b.date < removeDaysBefore)
+  )
+
+  // Legacy blocks keep their original order; a copy in cl-mid substitutes for
+  // the old text (Check K verifies it lost nothing).
+  const consumed = new Set()
+  const legacyOut = []
+  for (const b of old.filter((x) => x.kind === "legacy")) {
+    const copy = mid.find(
+      (x) => x.kind === "legacy" && !consumed.has(x) && x.heading.trim() === b.heading.trim()
+    )
+    if (copy) consumed.add(copy)
+    legacyOut.push(copy ?? b)
+  }
+  for (const b of mid.filter((x) => x.kind === "legacy")) if (!consumed.has(b)) legacyOut.push(b)
+
+  // The sentinel re-opens iff the old region swallowed it. Anything attached
+  // under it survives, except the seeded "_Nothing has aged out…_" placeholder
+  // once real entries replace it.
+  const oldSent = old.find((b) => b.kind === "sentinel")
+  const midSent = mid.find((b) => b.kind === "sentinel")
+  let sentinelBody = null
+  if (oldSent) {
+    sentinelBody = stripTrailingJunk(
+      (midSent?.body?.length ? midSent.body : oldSent.body).filter(
+        (l) => !l.trimStart().startsWith("_Nothing has aged out")
+      )
+    )
+  }
+
+  const h2Days = mid
+    .filter((b) => b.kind === "h2day")
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+  const dated = [
+    ...mid.filter((b) => b.kind === "day"),
+    ...midRanges,
+    ...keptOldDays,
+    ...keptOldRanges,
+  ].sort(byNewestFirst)
+
+  const segs = []
+  const withRule = (b) =>
+    b.body.length ? `${b.heading}\n\n${b.body.join("\n")}\n\n---` : `${b.heading}\n\n---`
+  for (const b of h2Days) segs.push(withRule(b))
+  for (const b of legacyOut) segs.push(withRule(b))
+  if (sentinelBody !== null)
+    segs.push(sentinelBody.length ? `${SENTINEL}\n\n${sentinelBody.join("\n")}` : SENTINEL)
+  for (const b of dated) segs.push(b.body.length ? `${b.heading}\n${b.body.join("\n")}` : b.heading)
+
+  if (segs.length === 0) return ""
+  let out = segs.join("\n\n") + "\n\n"
+  // Check F wants the day-separator rule directly above the sentinel; the text
+  // before the region normally ends with one, but supply it when it doesn't.
+  if (sentinelBody !== null && !endsWithRule(beforeText)) out = `---\n\n${out}`
+  return out
+}
+
+/**
  * Insert `entries` at the top of the archive's date zone: above the newest
  * existing date heading, else above the seeded placeholder note, else below the
  * header rule. An absent archive gets a minimal header so the first condense of
@@ -328,6 +530,19 @@ function shiftDays(iso, days) {
   return new Date(Date.UTC(y, m - 1, d) + days * 86400000).toISOString().slice(0, 10)
 }
 
+/**
+ * Absolute week index of an ISO date (days-since-epoch / 7). Same carve-out as
+ * `shiftDays`, for the same reasons: the input arrives explicitly (never the
+ * clock), the math is pure UTC, and only YYYY-MM-DD strings cross the boundary.
+ * Absolute — not anchored to --today — so the bucket a date falls in never
+ * changes between runs, which is what lets --auto extend a partial week's range
+ * instead of laying a second one beside it.
+ */
+function weekBucket(iso) {
+  const [y, m, d] = iso.split("-").map(Number)
+  return Math.floor(Date.UTC(y, m - 1, d) / (86400000 * 7))
+}
+
 const uniqSorted = (xs) => [...new Set(xs)].sort()
 
 /** Single-quote for a shell, so a backtick in an anchor can't run as a command. */
@@ -355,7 +570,7 @@ function summarySection(clText) {
  * Classify every heading in changelog.md into tiers for `today`, and derive the
  * anchors a condense run needs. Pure — reads no files, writes nothing.
  */
-function planTiers(clText, arText, today) {
+function planTiers(clText, arText, today, { autoRanges = false } = {}) {
   const keepDetailedSince = shiftDays(today, -3) // Tier 1: 0-3 days
   const tier2From = shiftDays(today, -14) // Tier 2: 4-14 days
   const tier3From = shiftDays(today, -42) // Tier 3: 15-42 days; Tier 4 below
@@ -399,12 +614,26 @@ function planTiers(clText, arText, today) {
     [...collapsing, ...beyondTier3].filter((d) => !condensingSet.has(d) && !arSingles.has(d))
   ).reverse()
 
+  // --auto merges a partial week's new days into an existing range in the same
+  // absolute week bucket (rather than laying a second range beside it), which
+  // requires that range to sit INSIDE the splice region — so it counts as
+  // "changed" here. Only ranges wholly within one bucket qualify; a hand-written
+  // range spanning buckets is left alone.
+  const mergeRangeKeys = !autoRanges
+    ? []
+    : (() => {
+        const buckets = new Set(collapsing.map(weekBucket))
+        return summaryRanges
+          .filter(([a, b]) => weekBucket(a) === weekBucket(b) && buckets.has(weekBucket(a)))
+          .map(([a, b]) => `${a} to ${b}`)
+      })()
+
   // The splice rewrites one contiguous region, from the newest heading that
   // changes down to (exclusive) the first heading below the LAST one that changes.
   // Dates that stay put can sit inside that span — an existing Tier-2 entry is
   // newer than the ones now aging into a week-range — so the region can enclose
-  // headings the model must re-emit verbatim.
-  const changedSummaryKeys = new Set([...collapsing, ...beyondTier3])
+  // headings the run re-emits verbatim itself.
+  const changedSummaryKeys = new Set([...collapsing, ...beyondTier3, ...mergeRangeKeys])
   const summaryHeadings = [...summary.matchAll(reAnyHeading())].map((m) => ({
     text: m[0].trim(),
     key: m[2] ? `${m[1]} to ${m[2]}` : m[1],
@@ -469,9 +698,7 @@ function planTiers(clText, arText, today) {
     autoArchive,
     needArContent,
     legacyInRegion,
-    // The sentinel is inside the rewritten region whenever the region starts at a
-    // full-detail `## DATE` heading, so cl-mid has to re-open the summary section.
-    spliceIncludesSentinel: clStart !== null && clStart.startsWith("## "),
+    mergeRangeKeys,
     arBefore,
     needsArchive: needArContent.length > 0,
     dropRangesBefore: tier3From,
@@ -503,6 +730,15 @@ function formatPlan(p, args) {
     return out.join("\n")
   }
 
+  out.push(
+    "Deterministic option — no temp files, no summaries to write; generates every tier from the",
+    "entries' **bold subjects**, anchor links, and issue refs, then runs the same checks:",
+    `  node scripts/condense-changelog.mjs --auto --today ${p.today} [--dry-run]`,
+    "",
+    "Or write the summaries yourself:",
+    ""
+  )
+
   const cmd = ["node scripts/condense-changelog.mjs \\"]
   cmd.push(`    --changelog ${forDisplay(args.changelog)} \\`)
   if (p.clStart) {
@@ -521,20 +757,21 @@ function formatPlan(p, args) {
 
   if (p.clStart) {
     out.push(
-      `Write /tmp/cl-mid.md — it replaces everything from ${JSON.stringify(p.clStart)} up to ` +
-        `(not including) ${JSON.stringify(p.clEnd)}, and must contain, in order:`
+      `Write /tmp/cl-mid.md — the NEW summary text only, in any order (the run re-opens the ` +
+        `section, re-emits what doesn't change, and sorts everything newest-first itself):`
     )
-    if (p.spliceIncludesSentinel) out.push(`  - the '## Earlier Changes (Summary)' heading`)
     if (p.toTier2.length) out.push(`  - new '### DATE' per-day summaries for ${list(p.toTier2)}`)
-    if (p.reEmit.length)
-      out.push(`  - these existing entries, copied VERBATIM (unchanged this run): ${list(p.reEmit)}`)
     if (p.collapsing.length)
       out.push(`  - new '### X to Y' week-range summaries covering ${list(p.collapsing)}`)
-    out.push(`  ...newest first throughout.`)
     out.push(
       `Carry each entry's **bold subject**, anchor-file links, and issue/PR refs into the ` +
         `summaries — they are what future greps find.`
     )
+    if (p.reEmit.length)
+      out.push(
+        `Unchanged entries inside the region (${list(p.reEmit)}) are re-emitted by the run ` +
+          `automatically — leave them out of cl-mid.`
+      )
     if (p.autoArchive.length)
       out.push(
         `The run moves the full-detail blocks for ${list(p.autoArchive)} into the archive ` +
@@ -560,6 +797,146 @@ function formatPlan(p, args) {
   out.push("Then run:")
   out.push(cmd.join("\n"))
   return out.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic summaries (--auto)
+// ---------------------------------------------------------------------------
+
+/**
+ * The bullets of a block body: each is a column-0 `- ` line plus its indented
+ * continuation lines. `### Category` headings and blank lines delimit; they are
+ * context, not bullet content.
+ */
+function bulletsOf(bodyLines) {
+  const bullets = []
+  let cur = null
+  for (const line of bodyLines) {
+    if (/^- /.test(line)) {
+      if (cur) bullets.push(cur)
+      cur = [line]
+    } else if (cur && line.trim() !== "" && !/^#{2,4}[ \t]/.test(line)) {
+      cur.push(line)
+    } else if (cur) {
+      bullets.push(cur)
+      cur = null
+    }
+  }
+  if (cur) bullets.push(cur)
+  return bullets
+}
+
+/**
+ * A bullet's retrieval keys — the same ones the fragment lint asks for. The
+ * summary tiers exist to keep these greppable while the archive holds the full
+ * text, so a deterministic summary is exactly: subject + first anchor link +
+ * issue/PR refs. A bullet with no **bold subject** can't be condensed without
+ * inventing prose, so its first line rides along verbatim instead.
+ */
+function bulletKeys(bulletLines) {
+  const text = bulletLines.map((l) => l.trim()).join(" ")
+  return {
+    subject: text.match(/^- \*\*([^*]+)\*\*/)?.[1] ?? null,
+    link: text.match(/\[[^\]]*\]\([^)]*\)/)?.[0] ?? null,
+    refs: [...text.matchAll(/\(#\d+\)/g)].map((m) => m[0]),
+    firstLine: bulletLines[0],
+  }
+}
+
+/** One Tier-2 summary line per source bullet. */
+function tier2Line(bulletLines) {
+  const k = bulletKeys(bulletLines)
+  if (!k.subject) return k.firstLine
+  return `- **${k.subject}**${k.link ? ` — ${k.link}` : ""}${k.refs.length ? ` ${k.refs.join(" ")}` : ""}`
+}
+
+/** One Tier-3 item per source bullet — subject + refs; links live on in the archive. */
+function tier3Item(bulletLines) {
+  const k = bulletKeys(bulletLines)
+  if (!k.subject) return k.firstLine.replace(/^- /, "")
+  return `**${k.subject}**${k.refs.length ? ` ${k.refs.join(" ")}` : ""}`
+}
+
+/**
+ * Build the --cl-mid content for an --auto run: Tier-2 per-day entries from the
+ * full-detail blocks leaving Tier 1, and Tier-3 week-ranges (one per absolute
+ * week bucket) from the collapsing days' existing summaries. A range already in
+ * the same bucket is extended — its body is carried over and the new day lines
+ * appended — rather than duplicated beside it.
+ */
+function buildAutoMid(clText, plan) {
+  const summaryBlocks = parseRegionBlocks(summarySection(clText), "summary", [])
+  const summaryDayBody = (date) =>
+    summaryBlocks.find((b) => b.kind === "day" && b.date === date)?.body ?? null
+  const fullDetailBody = (date) =>
+    dayBlocksIn(clText)
+      .filter((b) => b.date === date)
+      .flatMap((b) => (b.trailing ? [`_${b.trailing}_`] : []).concat(b.body))
+  const sourceBody = (date) => summaryDayBody(date) ?? fullDetailBody(date)
+
+  const parts = []
+  for (const date of plan.toTier2) {
+    const lines = bulletsOf(fullDetailBody(date)).map(tier2Line)
+    if (lines.length) parts.push(`### ${date}\n${lines.join("\n")}`)
+  }
+
+  const buckets = new Map()
+  for (const d of plan.collapsing) {
+    const k = weekBucket(d)
+    if (!buckets.has(k)) buckets.set(k, [])
+    buckets.get(k).push(d)
+  }
+  const mergeKeys = new Set(plan.mergeRangeKeys)
+  for (const [k, days] of [...buckets].sort((a, b) => b[0] - a[0])) {
+    days.sort()
+    let from = days[0]
+    let to = days[days.length - 1]
+    const body = []
+    for (const r of summaryBlocks.filter(
+      (b) => b.kind === "range" && mergeKeys.has(`${b.from} to ${b.to}`) && weekBucket(b.from) === k
+    )) {
+      if (r.from < from) from = r.from
+      if (r.to > to) to = r.to
+      body.push(...r.body)
+    }
+    for (const d of [...days].reverse()) {
+      const items = bulletsOf(sourceBody(d)).map(tier3Item)
+      body.push(`- ${d} — ${items.join("; ")}`)
+    }
+    parts.push(`### ${from} to ${to}\n${body.join("\n")}`)
+  }
+  return parts.length ? parts.join("\n\n") + "\n" : ""
+}
+
+/**
+ * Archive entries for the pre-1.1 gap: summary-section dates collapsing whose
+ * full detail was never archived (the old flow discarded it). The only content
+ * that still exists is the summary itself, so it moves to the archive verbatim,
+ * marked for what it is. Map of date → entry body.
+ */
+function buildAutoArchiveExtras(clText, plan) {
+  const summaryBlocks = parseRegionBlocks(summarySection(clText), "summary", [])
+  const extras = new Map()
+  for (const date of plan.needArContent) {
+    const body = summaryBlocks.find((b) => b.kind === "day" && b.date === date)?.body
+    if (body?.length)
+      extras.set(
+        date,
+        `_Summary only — the full detail predates the verbatim archive._\n\n${body.join("\n")}`
+      )
+  }
+  return extras
+}
+
+/** Pending fragment filenames next to `changelogPath`, or [] when none/unreadable. */
+function pendingFragments(changelogPath) {
+  try {
+    return readdirSync(join(dirname(resolve(changelogPath)), "changelog.d")).filter(
+      (n) => n.endsWith(".md") && n !== "README.md"
+    )
+  } catch {
+    return []
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -711,7 +1088,7 @@ function parseArgs(argv) {
     "--shed-year",
     "--today",
   ])
-  const args = { dryRun: false, plan: false }
+  const args = { dryRun: false, plan: false, auto: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === "--dry-run") {
@@ -720,6 +1097,10 @@ function parseArgs(argv) {
     }
     if (a === "--plan") {
       args.plan = true
+      continue
+    }
+    if (a === "--auto") {
+      args.auto = true
       continue
     }
     if (a === "-h" || a === "--help") {
@@ -784,27 +1165,89 @@ function main() {
 
   // --- Planning mode: read-only, returns before any splice ---
   if (args.plan) {
+    if (args.auto) usageError("pick one of --plan (read-only) or --auto (derive and run)")
     if (!args.today) {
       usageError("--plan requires --today YYYY-MM-DD (pass it explicitly; the clock is never read)")
     }
+    const pending = pendingFragments(args.changelog)
+    if (pending.length)
+      console.log(
+        `NOTE: ${pending.length} pending fragment(s) in docs/changelog.d — fold them first so ` +
+          `this plan (and the run it prints) sees a complete file.\n`
+      )
     console.log(formatPlan(planTiers(oldCl, readArchive(), args.today), args))
     return 0
   }
-  if (args.today) usageError("--today is only meaningful with --plan")
+  if (args.today && !args.auto) usageError("--today is only meaningful with --plan or --auto")
+
+  // --- Deterministic mode: derive the whole run from the plan ---
+  let autoMidText = null
+  let autoArchiveExtras = null
+  if (args.auto) {
+    if (!args.today) {
+      usageError("--auto requires --today YYYY-MM-DD (pass it explicitly; the clock is never read)")
+    }
+    for (const [k, flag] of [
+      ["clStart", "--cl-start"],
+      ["clEnd", "--cl-end"],
+      ["clMid", "--cl-mid"],
+      ["arBefore", "--ar-before"],
+      ["arContent", "--ar-content"],
+      ["keepDetailedSince", "--keep-detailed-since"],
+      ["dropRangesBefore", "--drop-ranges-before"],
+      ["shedYear", "--shed-year"],
+    ]) {
+      if (args[k]) usageError(`--auto derives the whole run itself — drop ${flag}`)
+    }
+    const plan = planTiers(oldCl, readArchive(), args.today, { autoRanges: true })
+    if (!plan.clStart && !plan.droppableRanges.length && !plan.shedYear) {
+      console.log(`Nothing has aged out for --today ${args.today} — nothing to do.`)
+      return 0
+    }
+    args.keepDetailedSince = plan.keepDetailedSince
+    args.dropRangesBefore = plan.dropRangesBefore
+    if (plan.shedYear) args.shedYear = plan.shedYear
+    if (plan.clStart) {
+      args.clStart = plan.clStart
+      args.clEnd = plan.clEnd
+      autoMidText = buildAutoMid(oldCl, plan)
+      autoArchiveExtras = buildAutoArchiveExtras(oldCl, plan)
+    }
+  }
 
   // --- Which operations were requested? ---
   const clFlags = [args.clStart, args.clEnd, args.clMid]
-  const haveSplice = clFlags.some(Boolean)
-  if (haveSplice && !clFlags.every(Boolean)) {
+  const haveSplice = clFlags.some(Boolean) || autoMidText !== null
+  if (haveSplice && autoMidText === null && !clFlags.every(Boolean)) {
     fails.push("Tier-2/3 splice needs all of --cl-start, --cl-end, --cl-mid (or none)")
     return abort(fails)
   }
   if (!haveSplice && !args.dropRangesBefore && !args.shedYear) {
     fails.push(
       "nothing to do: pass the --cl-* splice group, --drop-ranges-before and/or --shed-year " +
-        "(or --plan --today to see what this run should do)"
+        "(or --plan --today to see what this run should do, or --auto --today to just do it)"
     )
     return abort(fails)
+  }
+
+  // A splice must start from a complete changelog: a pending fragment is a Tier-1
+  // day the file doesn't have yet, and one with a stale date could even belong to
+  // a day this run condenses. Tier-4-only and shed runs never touch that zone, so
+  // they only warn.
+  const pending = pendingFragments(args.changelog)
+  if (pending.length && haveSplice) {
+    fails.push(
+      `L: ${pending.length} pending fragment(s) in docs/changelog.d — fold them into the ` +
+        `changelog first (the fold only adds Tier-1 days, never disturbing what this run ` +
+        `condenses), or fix/remove any unfoldable ones`
+    )
+    return abort(fails)
+  }
+  if (pending.length) {
+    console.warn(
+      `condense-changelog: note — ${pending.length} pending fragment(s) in docs/changelog.d; ` +
+        `this run doesn't touch Tier 1, but fold them soon`
+    )
   }
   // --archive is never unset now (it defaults to the conventional path), so the
   // coverage checks below always have something to read. An archive that is empty
@@ -815,7 +1258,7 @@ function main() {
   let newCl = oldCl
   let removedDayBlocks = []
   if (haveSplice) {
-    let mid = readFileSync(args.clMid, "utf8")
+    const mid = autoMidText ?? readFileSync(args.clMid, "utf8")
     const nStart = countOccurrences(oldCl, args.clStart)
     const nEnd = countOccurrences(oldCl, args.clEnd)
     if (nStart !== 1)
@@ -828,13 +1271,15 @@ function main() {
     const i = oldCl.indexOf(args.clStart)
     const j = oldCl.indexOf(args.clEnd)
     const region = oldCl.slice(i, j)
-    // Legacy no-date blocks the region swallows are re-emitted here, above the
-    // new content, so the model never re-types an opaque history — unless
-    // cl-mid already carries the heading, in which case Check K verifies that
-    // copy is complete instead.
-    const reEmit = legacyBlocksIn(region).filter((b) => !mid.includes(b.heading))
-    if (reEmit.length) mid = reEmit.map((b) => `${b.text}\n\n---\n\n`).join("") + mid
-    newCl = oldCl.slice(0, i) + mid + oldCl.slice(j)
+    // cl-mid carries only the NEW summary text; the assembler re-opens the
+    // sentinel, re-emits unchanged and legacy blocks from the old region, and
+    // orders everything — see assembleRegion. Checks C/D/E/K then verify the
+    // result the same way they verified a hand-assembled region.
+    const assembled = assembleRegion(region, mid, oldCl.slice(0, i), fails, {
+      removeDaysBefore: args.dropRangesBefore ?? null,
+    })
+    if (fails.length) return abort(fails)
+    newCl = oldCl.slice(0, i) + assembled + oldCl.slice(j)
     const kept = h2Dates(newCl)
     removedDayBlocks = dayBlocksIn(region).filter((b) => !kept.has(b.date))
   }
@@ -864,7 +1309,8 @@ function main() {
   // the detail moves there byte-for-byte the moment it leaves Tier 1. The model
   // never re-types it and never summarizes it away.
   let autoArchived = []
-  if (removedDayBlocks.length) {
+  const archiveExtras = autoArchiveExtras ?? new Map()
+  if (removedDayBlocks.length || archiveExtras.size) {
     const already = singleDates(newAr)
     for (const date of uniqSorted(removedDayBlocks.map((b) => b.date))) {
       if (already.has(date))
@@ -872,6 +1318,10 @@ function main() {
           `J: full-detail day '${date}' leaving the changelog already has an archive entry - ` +
             `the run archives removed days verbatim itself; remove '### ${date}' from --ar-content`
         )
+    }
+    for (const date of [...archiveExtras.keys()].sort()) {
+      if (already.has(date))
+        fails.push(`J: '${date}' already has an archive entry - refusing to add a second one`)
     }
     if (fails.length) return abort(fails)
 
@@ -884,16 +1334,26 @@ function main() {
       if (b.trailing) byDate.get(b.date).push(`_${b.trailing}_`)
       byDate.get(b.date).push(b.body.join("\n"))
     }
-    autoArchived = [...byDate.keys()] // region order — newest first
+    // --auto's pre-1.1 extras: the collapsing summary is the only text that still
+    // exists for these dates, so it is what moves in.
+    for (const [d, text] of archiveExtras) if (!byDate.has(d)) byDate.set(d, [text])
+    autoArchived = uniqSorted([...byDate.keys()]).reverse()
     newAr = insertIntoArchive(
       newAr,
       autoArchived.map((d) => `### ${d}\n\n${byDate.get(d).join("\n\n")}\n\n---\n\n`).join("")
     )
+    const lost = (date, l) =>
+      fails.push(`J: auto-archive lost a line of '${date}': ${JSON.stringify(l.slice(0, 60))}`)
     for (const b of removedDayBlocks) {
       for (const l of b.body) {
         if (l.trim() === "" || /^-{3,}\s*$/.test(l)) continue
-        if (!newAr.includes(l))
-          fails.push(`J: auto-archive lost a line of '${b.date}': ${JSON.stringify(l.slice(0, 60))}`)
+        if (!newAr.includes(l)) lost(b.date, l)
+      }
+    }
+    for (const [d, text] of archiveExtras) {
+      for (const l of text.split("\n")) {
+        if (l.trim() === "" || /^-{3,}\s*$/.test(l)) continue
+        if (!newAr.includes(l)) lost(d, l)
       }
     }
     if (fails.length) return abort(fails)
@@ -1004,6 +1464,11 @@ function main() {
     console.log(`  archive:   ${lineCount(oldAr)} -> ${lineCount(newAr)} lines`)
   if (autoArchived.length)
     console.log(`  archived ${autoArchived.length} full-detail day(s) verbatim: ${autoArchived.join(", ")}`)
+  if (archiveExtras.size)
+    console.log(
+      `  (of those, ${archiveExtras.size} pre-1.1 day(s) had only a summary left to move: ` +
+        `${[...archiveExtras.keys()].sort().reverse().join(", ")})`
+    )
   if (doArchive) {
     console.log(`  archived ${removed.length} collapsed date(s): ${removed.sort().join(", ") || "(none)"}`)
   }

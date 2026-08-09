@@ -7,9 +7,8 @@ collision structurally impossible.
 
 1. **Write one fragment per session** at `docs/changelog.d/<YYYY-MM-DD>-<slug>-<token>.md`
    (`<token>` = `openssl rand -hex 2`). It has **no `## DATE` header** — the fold reads the date from
-   the filename. Inside: `### Category` sections (**Added / Changed / Deprecated / Fixed / Removed /
-   Security** — no other heading, and no text above the first one) with `- **bold subject** — …`
-   bullets. Link hrefs are written relative to `docs/` (`../src/…`), i.e. as they'll read once folded.
+   the filename. Inside: `### Category` sections (**{{CATEGORIES}}** — no other heading, and no
+   text above the first one) with `- **bold subject** — …` bullets. Link hrefs are written relative to `docs/` (`../src/…`), i.e. as they'll read once folded.
    Run `/changelog-update` to do this properly.
 2. **Stage only your own fragment** when committing (explicit path — never `git add -A`).
 3. **Folding is a separate, serialized step** run when the tree is quiet: `{{FOLD_CMD}}`

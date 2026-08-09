@@ -120,8 +120,10 @@ npm run changelog:fold
 # any time, writes nothing — pending fragments foldable? changelog structure intact?
 npm run changelog:fold -- --check
 
-# periodically — folds first, then ages older entries down the tiers
-/changelog-condense
+# periodically — ages older entries down the tiers, no judgment calls, cron-safe
+node scripts/condense-changelog.mjs --auto --today $(date +%F)
+
+# …or /changelog-condense for model-written summary prose (same checks either way)
 
 # occasionally — is the system actually being used? (read-only, never a gate)
 npm run changelog:fold -- --report
@@ -216,13 +218,20 @@ model writes the summary that stays in `changelog.md`, but it never re-types (or
 away) the detail. Summaries are an index over the archive, not a replacement for it, so a grep over
 `docs/` finds every entry ever folded, exactly as authored, no git archaeology required.
 
-**The condense helper does the mechanics, the model does the judgment.** The model writes the summary
-prose to temp files; the script performs the splice and runs eleven structural checks (anchors
-unambiguous and ordered, no duplicate headings, nothing collapsed without being archived, the 0–3 day
-window untouched, no per-day heading covered by a week-range, separator and footer preserved, Tier-4
-drops only fully-archived week-ranges, a year shed that conserves every heading and line, a verbatim
-auto-archive that conserves every line, and legacy no-date blocks — a migrated Keep a Changelog
-history — surviving any splice). **It writes nothing unless every check passes.**
+**The condense helper does everything mechanical — and, with `--auto`, everything.**
+`--auto --today <DATE>` derives the whole run deterministically: summaries are generated from each
+entry's own retrieval keys (bold subject, anchor link, issue refs), week-ranges land one per calendar
+week (extending a partial week's range instead of duplicating it), and the same verification suite
+runs. The manual flow still exists for model-written prose, but even there the model supplies *only
+the new summary text*: the script re-opens the summary section, re-emits unchanged and legacy entries
+the splice region swallows, and sorts everything newest-first itself — an entry accidentally left out
+of the temp file is re-emitted, not silently lost. Thirteen structural checks guard every run
+(anchors unambiguous and ordered, no duplicate headings, nothing collapsed without being archived,
+the 0–3 day window untouched, no per-day heading covered by a week-range, separator and footer
+preserved, Tier-4 drops only fully-archived week-ranges, a year shed that conserves every heading and
+line, a verbatim auto-archive that conserves every line, legacy no-date blocks surviving any splice,
+no splice while fragments are pending, and temp-file content that parses into placeable blocks).
+**It writes nothing unless every check passes.**
 
 **The model isn't asked to do date arithmetic.** `--plan --today <DATE>` classifies every heading into
 its tier and prints the exact anchors and cutoffs to pass — including whether the archive is due to
@@ -231,8 +240,8 @@ destructive operation.
 
 **Dates are compared as ISO strings.** `YYYY-MM-DD` sorts lexicographically, so there is no timezone
 handling anywhere and no way for a local-midnight bug to move an entry to the wrong day. The single
-exception is `--plan`'s cutoff arithmetic, which is UTC-only and works from the `--today` you pass
-rather than the clock.
+exception is the cutoff/week-bucket arithmetic behind `--plan` and `--auto`, which is UTC-only and
+works from the `--today` you pass rather than the clock.
 
 ## Updating an installed repo
 

@@ -12,11 +12,62 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.2.0`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.3.0`.
 
 ---
 
-## [1.2.0] — 2026-08-03
+## [1.3.0] — 2026-08-09
+
+The determinism release: a condense no longer needs a model, and the model-written flow can no
+longer lose an entry. **Upgrade: recommended — re-run `install.mjs`. Safe on an existing
+installation**; no shared anchor, category, or filename convention changed, every existing flag
+behaves identically, and an already-written `--cl-mid` that followed the old instructions (sentinel
+and unchanged entries re-typed) still verifies — the assembler dedupes the sentinel and Check K
+covers restated legacy blocks.
+
+### Added
+
+- **`condense-changelog.mjs --auto --today <DATE>`** — the whole condense derived and executed in
+  one deterministic command: tier boundaries, Tier-2 per-day summaries built from each bullet's
+  **bold subject** + first anchor link + issue refs (the keys the fragment lint already enforces),
+  Tier-3 week-ranges, verbatim archival, the Tier-4 drop, and the year shed, all under the same
+  verification suite. Suitable for cron/CI; `--plan` now prints it as the default path. Pre-1.1
+  summary-only dates (detail discarded by the old flow) are archived as-is, marked
+  `_Summary only …_` — the summary is the only text that still exists for them.
+- **Absolute week buckets for `--auto`'s Tier-3 ranges** (`weekBucket`, epoch-days ÷ 7). A date's
+  bucket never changes between runs, so a later run *extends* a partial week's existing range —
+  body kept, new per-day lines appended, heading widened — instead of laying a second range beside
+  it.
+- **Check L — fold-first is enforced, not requested.** A splice (manual or `--auto`) refuses to run
+  while fragments are pending in `docs/changelog.d/`; Tier-4-only and shed runs warn instead, and
+  `--plan` flags the pending count up front.
+- **Check M** — `--cl-mid` (and the splice region itself) must parse into placeable blocks; content
+  sitting under no heading is refused rather than guessed at or silently dropped.
+- **`{{CATEGORIES}}` / `{{CATEGORIES_BOLD}}` substitution.** The docs that list the category
+  vocabulary are filled from the payload's now-exported `CATEGORY_ORDER`, so adding a category is a
+  one-array change plus a re-install, not a four-doc sync.
+
+### Changed
+
+- **The splice region is assembled; `--cl-mid` carries only the NEW summary text.** The script
+  re-opens the `## Earlier Changes (Summary)` sentinel itself (a mangled copy in cl-mid is
+  canonicalized, a duplicate deduped), re-emits unchanged `### DATE` / `### X to Y` entries and
+  legacy blocks the region swallows, and sorts everything newest-first — cl-mid's order is
+  irrelevant. An old entry now leaves the region only for a stated reason: replaced by key in
+  cl-mid, collapsed into a covering range (Check C then demands its archive entry), or a per-day
+  summary older than `--drop-ranges-before`, whose only home is the archive.
+- **`/changelog-condense` shrank to match** — the tier table, the fold-first note, `--auto` as the
+  default path, and a three-step manual flow that defers to `--plan` instead of restating it.
+- **The installer prints the CLAUDE.md snippet in both branches.** When a target's CLAUDE.md
+  already mentions `docs/changelog.d/`, the output said "check it matches the snippet below" and
+  then printed nothing to compare against.
+
+### Fixed
+
+- **An unchanged entry omitted from `--cl-mid` was silently deleted.** Its detail was already in
+  the archive, so Check C passed, Check D only guards `##` headings, and no check covered a dropped
+  week-range at all — the changelog just lost its index line with every check green. The assembler
+  re-emits such entries instead; the plan no longer asks anyone to copy anything verbatim.
 
 The observability release: one read-only command answers "is this system actually being used?"
 **Upgrade: optional — re-run `install.mjs`. Safe on an existing installation**; nothing about the

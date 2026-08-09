@@ -200,6 +200,25 @@ group("migrating an existing messy changelog", () => {
     assert.ok(!read(messy, "docs/changelog.d/README.md").includes("{{"))
   })
 
+  test("the category vocabulary is substituted from the fold's own array", () => {
+    // Single source: CATEGORY_ORDER in collect-changelog.mjs. The docs list the
+    // categories via {{CATEGORIES}} / {{CATEGORIES_BOLD}}, so a category added to
+    // the array propagates instead of relying on a four-docs sync rule.
+    const slash = "Added / Changed / Deprecated / Fixed / Removed / Security"
+    const bold = "**Added**, **Changed**, **Deprecated**, **Fixed**, **Removed**, **Security**"
+    assert.ok(read(messy, "docs/changelog.d/README.md").includes(`**${slash}**`))
+    assert.ok(read(messy, ".claude/commands/changelog-update.md").includes(bold))
+    assert.ok(install(newRepo({ "CLAUDE.md": "x" })).includes(slash), "snippet too")
+  })
+
+  test("a repo whose CLAUDE.md already documents fragments still gets the snippet to diff", () => {
+    const documented = newRepo({ "CLAUDE.md": "## Changelog\n\nUses docs/changelog.d/ fragments.\n" })
+    const out = install(documented)
+    assert.match(out, /already mentions docs\/changelog\.d\/ — check it matches this snippet:/, out)
+    assert.match(out, /fragment-based/, "the snippet body must actually be printed to compare against")
+    assert.ok(!out.includes("{{"), out)
+  })
+
   test("the printed CLAUDE.md snippet substitutes in both branches", () => {
     // This one is PRINTED, never written, so no file assertion covers it — an
     // unsubstituted placeholder here is one the user pastes into their CLAUDE.md.
@@ -976,7 +995,12 @@ group("condense --plan", () => {
     const r = condense(repo, [...CL_AR, "--plan", "--today", "2026-07-26"])
     assert.match(r.out, /--cl-start '## 2026-07-20'/)
     assert.match(r.out, /--cl-end\s+'### 2026-06-01 to 2026-06-07'/)
-    assert.match(r.out, /copied VERBATIM \(unchanged this run\): ### 2026-07-14/)
+    assert.match(r.out, /Unchanged entries inside the region \(### 2026-07-14\) are re-emitted/)
+  })
+
+  test("the plan offers the deterministic --auto path first", () => {
+    const r = condense(repo, [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.match(r.out, /--auto --today 2026-07-26/, r.out)
   })
 
   test("computes the cutoffs and the archive anchor", () => {
@@ -1244,12 +1268,17 @@ Early July theme summary.
     assert.ok(ar.includes("- **Same day, twice** — q.") && ar.includes("- **Six days ago** — z."))
   })
 
-  test("Check C still catches an old-flow summary dropped without being archived", () => {
-    // The legacy full-detail day is auto-archived now, but the summary-section
-    // dates the region swallows (07-14, 07-05, 07-02) vanish with no archive
-    // entry — exactly what Check C exists to refuse.
+  test("Check C still catches an old-flow summary collapsed without being archived", () => {
+    // The legacy full-detail day is auto-archived, and summaries the region
+    // swallows are re-emitted — so the way an old-flow summary date can still
+    // vanish is a week-range covering it with no archive entry behind it.
+    // Exactly what Check C exists to refuse.
     const dir = legacyRepo("## 2026-07-20 (retro)")
-    write(dir, "cl-mid.md", "## Earlier Changes (Summary)\n\n")
+    write(
+      dir,
+      "cl-mid.md",
+      "### 2026-07-02 to 2026-07-14\nTheme with no archived detail behind it.\n"
+    )
     assertCheckFails(
       condense(dir, [
         ...CL_AR,
@@ -1305,6 +1334,19 @@ group("condense preserves a migrated Keep-a-Changelog history", () => {
     assert.ok(ar.includes("- **Old bug** — greppable two."))
     assert.equal(foldAttempt(repo, ["--check"]).status, 0)
   })
+
+  test("a later --auto run collapses the summaries and still leaves legacy alone", () => {
+    const r = condense(repo, ["--auto", "--today", "2026-08-10"])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.match(cl, /^### 2026-07-18 to 2026-07-20$/m, cl)
+    assert.ok(cl.includes("- 2026-07-20 — **New feature**"))
+    assert.ok(cl.includes("- 2026-07-18 — **Old bug**"))
+    for (const h of ["## [Unreleased]", "## [1.2.0] - 2026-03-29", "## [1.1.0] - 2026-02-01"]) {
+      assert.equal(cl.split("\n").filter((l) => l === h).length, 1, `${h} survives exactly once`)
+    }
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
 })
 
 group("condense verification checks", () => {
@@ -1354,10 +1396,14 @@ group("condense verification checks", () => {
     )
   })
 
-  test("C: dropping a per-day date without archiving it aborts", () => {
+  test("C: collapsing a per-day date without archiving it aborts", () => {
     const repo = midlifeRepo()
-    // 07-05 and 07-02 vanish from the changelog with no archive entry for them.
-    write(repo, "cl-mid.md", "## Earlier Changes (Summary)\n\n### 2026-07-14\n- kept.\n\n")
+    // 07-05 and 07-02 collapse into the range with no archive entry for them.
+    write(
+      repo,
+      "cl-mid.md",
+      "### 2026-07-14\n- kept.\n\n### 2026-07-02 to 2026-07-05\nEarly July theme.\n"
+    )
     assertCheckFails(
       condense(repo, [
         "--changelog", "docs/changelog.md",
@@ -1406,19 +1452,42 @@ group("condense verification checks", () => {
     )
   })
 
-  test("F: losing the separator before the summary sentinel aborts", () => {
+  test("F: a changelog already missing the separator before the sentinel aborts", () => {
+    // The splice re-opens the sentinel itself (a mangled copy in cl-mid can't
+    // break F any more), so the way F fires is a hand-edit outside the region.
     const repo = midlifeRepo()
-    write(repo, "cl-mid.md", "## Earlier Changes\n\n### 2026-07-14\n- renamed sentinel.\n\n")
+    write(
+      repo,
+      "docs/changelog.md",
+      MIDLIFE_CL.replace("---\n\n## Earlier Changes (Summary)", "## Earlier Changes (Summary)")
+    )
+    write(repo, "cl-mid.md", "### 2026-07-14\n- edited.\n")
     assertCheckFails(
       condense(repo, [
         "--changelog", "docs/changelog.md",
-        "--cl-start", "## 2026-07-20",
+        "--cl-start", "### 2026-07-14",
         "--cl-end", "### 2026-07-05",
         "--cl-mid", "cl-mid.md",
         "--archive", "docs/changelog-archive.md",
       ]),
       "F"
     )
+  })
+
+  test("a mangled sentinel in cl-mid is canonicalized, not spliced in broken", () => {
+    const repo = midlifeRepo()
+    write(repo, "cl-mid.md", "## Earlier Changes\n\n### 2026-07-20\n- s.\n\n### 2026-07-18\n- s.\n")
+    const r = condense(repo, [
+      ...CL_AR,
+      "--cl-start", "## 2026-07-20",
+      "--cl-end", "### 2026-07-14",
+      "--cl-mid", "cl-mid.md",
+      "--keep-detailed-since", "2026-07-23",
+    ])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.ok(cl.includes("---\n\n## Earlier Changes (Summary)"), cl)
+    assert.equal(cl.match(/^## Earlier Changes/gm).length, 1, "one sentinel, canonical")
   })
 
   test("G: a changelog whose archive footer is already gone aborts", () => {
@@ -1527,14 +1596,16 @@ group("condense verification checks", () => {
     const repo = midlifeRepo()
     const before = read(repo, "docs/changelog.md")
     const beforeAr = read(repo, "docs/changelog-archive.md")
-    write(repo, "cl-mid.md", "## Earlier Changes (Summary)\n\n### 2026-07-14\n- kept.\n\n")
-    condense(repo, [
+    // Check C fires: the range collapses 07-05/07-02 with no archive entry.
+    write(repo, "cl-mid.md", "### 2026-07-14\n- kept.\n\n### 2026-07-02 to 2026-07-05\nTheme.\n")
+    const r = condense(repo, [
       "--changelog", "docs/changelog.md",
       "--cl-start", "## 2026-07-20",
       "--cl-end", "### 2026-06-01 to 2026-06-07",
       "--cl-mid", "cl-mid.md",
       "--archive", "docs/changelog-archive.md",
     ])
+    assert.equal(r.status, 1, r.out)
     assert.equal(read(repo, "docs/changelog.md"), before)
     assert.equal(read(repo, "docs/changelog-archive.md"), beforeAr)
   })
@@ -1553,6 +1624,307 @@ group("condense verification checks", () => {
     const r = condense(repo, [...CL_AR])
     assert.equal(r.status, 1)
     assert.match(r.out, /nothing to do/)
+  })
+})
+
+group("condense assembles the region", () => {
+  test("an unchanged summary entry missing from cl-mid is re-emitted, not lost", () => {
+    // Before the assembler, this exact omission silently deleted the entry: its
+    // detail was already archived, so Check C passed, and nothing else looked.
+    const repo = midlifeRepo()
+    write(
+      repo,
+      "cl-mid.md",
+      "### 2026-07-20\n- **Six days ago** — condensed.\n\n### 2026-07-18\n- **Eight days ago** — condensed.\n"
+    )
+    const r = condense(repo, [
+      ...CL_AR,
+      "--cl-start", "## 2026-07-20",
+      "--cl-end", "### 2026-07-05",
+      "--cl-mid", "cl-mid.md",
+      "--keep-detailed-since", "2026-07-23",
+    ])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.ok(cl.includes("### 2026-07-14\n- **Twelve days ago** — still Tier 2."), cl)
+    assert.ok(cl.includes("---\n\n## Earlier Changes (Summary)"), "sentinel re-opened with its rule")
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("an unchanged week-range inside the region is re-emitted too", () => {
+    const repo = midlifeRepo()
+    write(repo, "cl-mid.md", "### 2026-07-20\n- s.\n\n### 2026-07-18\n- s.\n")
+    const r = condense(repo, [
+      ...CL_AR,
+      "--cl-start", "## 2026-07-20",
+      "--cl-end", "> Full per-day details available in",
+      "--cl-mid", "cl-mid.md",
+      "--keep-detailed-since", "2026-07-23",
+    ])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.match(cl, /^### 2026-06-01 to 2026-06-07$/m, cl)
+    assert.match(cl, /^### 2026-05-04 to 2026-05-10$/m)
+    assert.ok(cl.includes("Theme summary for early June."))
+  })
+
+  test("cl-mid order doesn't matter — the assembler sorts newest-first", () => {
+    const repo = midlifeRepo()
+    // Oldest first, range in the middle — deliberately scrambled.
+    write(
+      repo,
+      "cl-mid.md",
+      "### 2026-07-18\n- s18.\n\n### 2026-07-02 to 2026-07-05\nEarly July theme.\n\n### 2026-07-20\n- s20.\n"
+    )
+    write(repo, "ar-new.md", "### 2026-07-05\n- d.\n\n---\n\n### 2026-07-02\n- d.\n\n---\n\n")
+    const r = condense(repo, [
+      ...CL_AR,
+      "--cl-start", "## 2026-07-20",
+      "--cl-end", "### 2026-06-01 to 2026-06-07",
+      "--cl-mid", "cl-mid.md",
+      "--ar-before", "### 2026-06-07",
+      "--ar-content", "ar-new.md",
+      "--keep-detailed-since", "2026-07-23",
+    ])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    const at = (s) => cl.indexOf(s)
+    assert.ok(at("### 2026-07-20") < at("### 2026-07-18"), cl)
+    assert.ok(at("### 2026-07-18") < at("### 2026-07-14"))
+    assert.ok(at("### 2026-07-14") < at("### 2026-07-02 to 2026-07-05"))
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("M: content under no heading in cl-mid is refused, not guessed at", () => {
+    const repo = midlifeRepo()
+    write(repo, "cl-mid.md", "stray prose above any heading\n\n### 2026-07-14\n- kept.\n")
+    assertCheckFails(
+      condense(repo, [
+        ...CL_AR,
+        "--cl-start", "### 2026-07-14",
+        "--cl-end", "### 2026-07-05",
+        "--cl-mid", "cl-mid.md",
+      ]),
+      "M"
+    )
+  })
+
+  test("a per-day summary older than the Tier-4 cutoff is removed, not re-emitted", () => {
+    // Past --drop-ranges-before even a week-range would be dropped, so a per-day
+    // summary's only home is the archive — which must already hold it (Check C).
+    const repo = midlifeRepo()
+    write(
+      repo,
+      "docs/changelog-archive.md",
+      MIDLIFE_AR.replace(
+        "### 2026-06-07",
+        "### 2026-07-05\n- **Three weeks ago** — detail.\n\n### 2026-07-02\n- **Also aging** — detail.\n\n### 2026-06-07"
+      )
+    )
+    write(repo, "cl-mid.md", "### 2026-07-20\n- s.\n\n### 2026-07-18\n- s.\n")
+    const r = condense(repo, [
+      ...CL_AR,
+      "--cl-start", "## 2026-07-20",
+      "--cl-end", "> Full per-day details available in",
+      "--cl-mid", "cl-mid.md",
+      "--keep-detailed-since", "2026-07-23",
+      "--drop-ranges-before", "2026-07-10",
+    ])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.doesNotMatch(cl, /^### 2026-07-05$/m, cl)
+    assert.doesNotMatch(cl, /^### 2026-07-02$/m)
+    assert.match(cl, /^### 2026-07-14$/m, "newer summary still re-emitted")
+  })
+})
+
+group("condense refuses to splice over pending fragments", () => {
+  test("L: a splice aborts while a fragment is pending", () => {
+    const repo = midlifeRepo()
+    fragment(repo, "2026-07-26-pending-9a9a.md", "### Added\n- **Pending** — mid-session.\n")
+    write(repo, "cl-mid.md", "### 2026-07-20\n- s.\n\n### 2026-07-18\n- s.\n")
+    assertCheckFails(
+      condense(repo, [
+        ...CL_AR,
+        "--cl-start", "## 2026-07-20",
+        "--cl-end", "### 2026-07-05",
+        "--cl-mid", "cl-mid.md",
+        "--keep-detailed-since", "2026-07-23",
+      ]),
+      "L"
+    )
+    assert.ok(existsSync(join(repo, "docs/changelog.d/2026-07-26-pending-9a9a.md")))
+  })
+
+  test("--plan notes the pending fragments up front", () => {
+    const repo = midlifeRepo()
+    fragment(repo, "2026-07-26-pending-9b9b.md", "### Added\n- **Pending** — mid-session.\n")
+    const r = condense(repo, [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /NOTE: 1 pending fragment\(s\)/, r.out)
+  })
+
+  test("a Tier-4-only run warns but proceeds — it never touches Tier 1", () => {
+    const repo = midlifeRepo()
+    fragment(repo, "2026-07-26-pending-9c9c.md", "### Added\n- **Pending** — mid-session.\n")
+    const r = condense(repo, [...CL_AR, "--drop-ranges-before", "2026-06-14"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /pending fragment/, r.out)
+    assert.doesNotMatch(read(repo, "docs/changelog.md"), /^### 2026-06-01 to 2026-06-07$/m)
+  })
+})
+
+group("condense --auto", () => {
+  test("one command condenses every tier deterministically", () => {
+    const repo = midlifeRepo()
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /All checks passed/, r.out)
+
+    const cl = read(repo, "docs/changelog.md")
+    assert.match(cl, /^## 2026-07-26$/m, "Tier 1 untouched")
+    assert.match(cl, /^## 2026-07-25$/m, "Tier 1 untouched")
+    // Tier 2: generated from the full-detail bullets' subjects.
+    assert.ok(cl.includes("### 2026-07-20\n- **Six days ago**"), cl)
+    assert.ok(cl.includes("### 2026-07-18\n- **Eight days ago**"))
+    // Unchanged entry re-emitted between the new tiers.
+    assert.ok(cl.includes("### 2026-07-14\n- **Twelve days ago** — still Tier 2."))
+    // Tier 3: one range per calendar week, per-day subject lines.
+    assert.ok(cl.includes("### 2026-07-02 to 2026-07-05"), cl)
+    assert.ok(cl.includes("- 2026-07-05 — **Three weeks ago**"))
+    assert.ok(cl.includes("- 2026-07-02 — **Also aging**"))
+    // Tier 4: stale ranges dropped.
+    assert.doesNotMatch(cl, /^### 2026-06-01 to 2026-06-07$/m)
+    assert.doesNotMatch(cl, /^### 2026-05-04 to 2026-05-10$/m)
+
+    const ar = read(repo, "docs/changelog-archive.md")
+    assert.ok(ar.includes("- **Six days ago** — z."), "full detail archived verbatim")
+    assert.ok(ar.includes("- **Eight days ago** — w."))
+    // Pre-1.1 dates had only summaries left — moved verbatim, marked.
+    assert.match(ar, /^### 2026-07-05$/m, ar)
+    assert.ok(ar.includes("- **Three weeks ago** — must collapse to Tier 3."))
+    assert.ok(ar.includes("_Summary only — the full detail predates the verbatim archive._"))
+
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("links and issue refs survive into the generated Tier-2 lines", () => {
+    const repo = newRepo({ "package.json": '{\n  "name": "keyed"\n}\n' })
+    install(repo)
+    write(
+      repo,
+      "docs/changelog.md",
+      [
+        "# Changelog",
+        "",
+        "---",
+        "",
+        "## 2026-07-18",
+        "",
+        "### Added",
+        "- **Thing** — long prose a summary should drop. [`x.ts`](../src/x.ts). (#42)",
+        "- no subject here, rides along verbatim",
+        "",
+        "---",
+        "",
+        "## Earlier Changes (Summary)",
+        "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)",
+        "",
+      ].join("\n")
+    )
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.ok(cl.includes("- **Thing** — [`x.ts`](../src/x.ts) (#42)"), cl)
+    assert.ok(cl.includes("- no subject here, rides along verbatim"), "no invented prose")
+    assert.ok(!cl.includes("long prose a summary should drop"))
+    assert.ok(read(repo, "docs/changelog-archive.md").includes("long prose a summary should drop"))
+  })
+
+  test("a later run extends the week's existing range instead of doubling it", () => {
+    const repo = newRepo({ "package.json": '{\n  "name": "merge"\n}\n' })
+    install(repo)
+    write(
+      repo,
+      "docs/changelog.md",
+      [
+        "# Changelog",
+        "",
+        "---",
+        "",
+        "## 2026-08-03",
+        "",
+        "### Added",
+        "- **Fresh** — kept.",
+        "",
+        "---",
+        "",
+        "## Earlier Changes (Summary)",
+        "",
+        "### 2026-07-20",
+        "- **Late member** — of the same week.",
+        "",
+        "### 2026-07-16 to 2026-07-18",
+        "- 2026-07-18 — **Range start**",
+        "- 2026-07-16 — **Earlier member**",
+        "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)",
+        "",
+      ].join("\n")
+    )
+    const r = condense(repo, ["--auto", "--today", "2026-08-04"])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.match(cl, /^### 2026-07-16 to 2026-07-20$/m, cl)
+    assert.doesNotMatch(cl, /^### 2026-07-16 to 2026-07-18$/m, "old partial range replaced")
+    assert.doesNotMatch(cl, /^### 2026-07-20$/m, "per-day entry collapsed into the range")
+    // The extended range keeps the old body and appends the new day's line.
+    assert.ok(cl.includes("- 2026-07-18 — **Range start**"))
+    assert.ok(cl.includes("- 2026-07-20 — **Late member**"))
+    assert.ok(read(repo, "docs/changelog-archive.md").includes("- **Late member** — of the same week."))
+  })
+
+  test("--auto --dry-run writes nothing", () => {
+    const repo = midlifeRepo()
+    const r = condense(repo, ["--auto", "--today", "2026-07-26", "--dry-run"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Dry run - nothing written/)
+    assert.equal(read(repo, "docs/changelog.md"), MIDLIFE_CL)
+    assert.equal(read(repo, "docs/changelog-archive.md"), MIDLIFE_AR)
+  })
+
+  test("L: --auto refuses while fragments are pending", () => {
+    const repo = midlifeRepo()
+    fragment(repo, "2026-07-26-pending-9d9d.md", "### Added\n- **Pending** — mid-session.\n")
+    assertCheckFails(condense(repo, ["--auto", "--today", "2026-07-26"]), "L")
+    assert.equal(read(repo, "docs/changelog.md"), MIDLIFE_CL)
+  })
+
+  test("--auto requires --today and rejects the manual flags", () => {
+    const repo = midlifeRepo()
+    const noToday = condense(repo, ["--auto"])
+    assert.equal(noToday.status, 2)
+    assert.match(noToday.out, /--auto requires --today/)
+
+    write(repo, "cl-mid.md", "x\n")
+    const mixed = condense(repo, ["--auto", "--today", "2026-07-26", "--cl-mid", "cl-mid.md"])
+    assert.equal(mixed.status, 2)
+    assert.match(mixed.out, /--auto derives the whole run itself — drop --cl-mid/)
+
+    const both = condense(repo, ["--auto", "--plan", "--today", "2026-07-26"])
+    assert.equal(both.status, 2)
+    assert.match(both.out, /pick one of --plan/)
+  })
+
+  test("says so and exits 0 when nothing has aged out", () => {
+    const fresh = newRepo()
+    install(fresh, ["--name", "Fresh"])
+    const before = read(fresh, "docs/changelog.md")
+    const r = condense(fresh, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Nothing has aged out/)
+    assert.equal(read(fresh, "docs/changelog.md"), before)
   })
 })
 

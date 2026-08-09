@@ -33,7 +33,7 @@ The diff's full story already lives in git — the changelog is the **index**, n
    - `<slug>` is a short kebab-case topic (e.g. `session-cookie-rotation`).
    - `<token>` is a few random chars so two agents on the same topic can't collide. Generate it with `openssl rand -hex 2` (falls back to any 4 random hex chars).
    - Put **all** of this session's entries in this one file; add more `### Category` sections rather than a second file.
-3. Fill it with `### Category` sections and `- **bold subject** — …` bullets. The category must be one of **Added**, **Changed**, **Deprecated**, **Fixed**, **Removed**, **Security** — the fold refuses a fragment with any other heading rather than guess where it belongs, so don't invent one (no `### Docs`, `### Performance`, `### Notes`).
+3. Fill it with `### Category` sections and `- **bold subject** — …` bullets. The category must be one of {{CATEGORIES_BOLD}} — the fold refuses a fragment with any other heading rather than guess where it belongs, so don't invent one (no `### Docs`, `### Performance`, `### Notes`).
 4. Keep each entry within the concision rules below.
 5. Check your fragment: run `{{FOLD_CMD_CHECK}}`. It verifies the fragment is foldable and prints
    `lint` warnings for bullets missing a **bold subject** or an anchor-file link — the keys future
