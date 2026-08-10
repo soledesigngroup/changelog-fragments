@@ -15,7 +15,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
@@ -519,7 +519,7 @@ group("folding fragments", () => {
     writeFileSync(join(repo, "docs/changelog.d/.fold.lock"), `${process.pid}\n`)
     const r = foldAttempt(repo)
     assert.equal(r.status, 1)
-    assert.match(r.out, /another fold is running/)
+    assert.match(r.out, /another fold or condense is running/)
     assert.ok(existsSync(join(repo, "docs/changelog.d/2026-07-31-race-1a1a.md")))
     rmSync(join(repo, "docs/changelog.d/.fold.lock"))
   })
@@ -1926,6 +1926,100 @@ group("condense --auto", () => {
     assert.match(r.out, /Nothing has aged out/)
     assert.equal(read(fresh, "docs/changelog.md"), before)
   })
+})
+
+group("condense serializes with the fold", () => {
+  // A writing condense is a read-modify-write of the same file the fold writes,
+  // so it holds the fold's lock for that whole span. --plan and --dry-run stay
+  // lock-free — read-only, like --report.
+  const agedRepo = () => {
+    const repo = newRepo({ "package.json": '{\n  "name": "lock"\n}\n' })
+    install(repo)
+    write(
+      repo,
+      "docs/changelog.md",
+      [
+        "# Changelog",
+        "",
+        "---",
+        "",
+        "## 2026-07-18",
+        "",
+        "### Added",
+        "- **Aged out** — moves to the archive. [`x.ts`](../src/x.ts).",
+        "",
+        "---",
+        "",
+        "## Earlier Changes (Summary)",
+        "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)",
+        "",
+      ].join("\n")
+    )
+    return repo
+  }
+
+  test("a live fold's lock makes a writing condense refuse", () => {
+    const repo = agedRepo()
+    writeFileSync(join(repo, "docs/changelog.d/.fold.lock"), `${process.pid}\n`)
+    const before = read(repo, "docs/changelog.md")
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /a fold or another condense is running/)
+    assert.equal(read(repo, "docs/changelog.md"), before, "nothing may be written")
+    assert.ok(existsSync(join(repo, "docs/changelog.d/.fold.lock")), "the holder's lock stays")
+    rmSync(join(repo, "docs/changelog.d/.fold.lock"))
+  })
+
+  test("--plan and --dry-run stay lock-free", () => {
+    const repo = agedRepo()
+    writeFileSync(join(repo, "docs/changelog.d/.fold.lock"), `${process.pid}\n`)
+    const plan = condense(repo, ["--plan", "--today", "2026-07-26"])
+    assert.equal(plan.status, 0, plan.out)
+    const dry = condense(repo, ["--auto", "--today", "2026-07-26", "--dry-run"])
+    assert.equal(dry.status, 0, dry.out)
+    rmSync(join(repo, "docs/changelog.d/.fold.lock"))
+  })
+
+  test("a lock from a dead process is reclaimed, and released after the run", () => {
+    const repo = agedRepo()
+    writeFileSync(join(repo, "docs/changelog.d/.fold.lock"), "999999999\n")
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /reclaiming stale lock/)
+    assert.ok(!existsSync(join(repo, "docs/changelog.d/.fold.lock")), "lock must be released")
+    assert.ok(read(repo, "docs/changelog-archive.md").includes("**Aged out**"))
+  })
+
+  test("the lock is released even when a check aborts the run", () => {
+    const repo = agedRepo()
+    fragment(repo, "2026-07-26-pending-5e5e.md", "### Added\n- **Pending** — mid-session.\n")
+    assertCheckFails(condense(repo, ["--auto", "--today", "2026-07-26"]), "L")
+    assert.ok(!existsSync(join(repo, "docs/changelog.d/.fold.lock")), "no stale lock after abort")
+  })
+
+  // Root ignores mode bits, so the forced-crash test below can't fail its write there.
+  if (process.getuid?.() !== 0) {
+    test("the archive lands before the changelog, so a crash duplicates instead of losing", () => {
+      const repo = agedRepo()
+      mkdirSync(join(repo, "elsewhere"))
+      write(repo, "elsewhere/archive.md", read(repo, "docs/changelog-archive.md"))
+      chmodSync(join(repo, "docs"), 0o555)
+      try {
+        const r = condense(repo, [
+          "--auto", "--today", "2026-07-26",
+          "--changelog", "docs/changelog.md",
+          "--archive", "elsewhere/archive.md",
+        ])
+        assert.notEqual(r.status, 0, "the changelog write must fail")
+        assert.ok(read(repo, "elsewhere/archive.md").includes("**Aged out**"), "archive written first")
+        assert.match(read(repo, "docs/changelog.md"), /^## 2026-07-18$/m, "changelog untouched — nothing lost")
+      } finally {
+        chmodSync(join(repo, "docs"), 0o755)
+      }
+      assert.ok(!existsSync(join(repo, "docs/changelog.d/.fold.lock")), "lock released on the way down")
+    })
+  }
 })
 
 group("condense keeps the archive in date order", () => {

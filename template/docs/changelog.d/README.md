@@ -63,9 +63,10 @@ Then commit `docs/changelog.md` together with the fragment deletions.
 splice while fragments are pending here, so condensing always starts from a
 complete file.
 
-Only one fold can run at a time — it takes an exclusive `.fold.lock` in this
-directory and a second one exits rather than racing. A lock left behind by a
-killed process is reclaimed automatically on the next run.
+Only one writer can run at a time — the fold takes an exclusive `.fold.lock` in
+this directory, a condense holds the same lock while it rewrites the changelog,
+and a second writer exits rather than racing. A lock left behind by a killed
+process is reclaimed automatically on the next run.
 
 ## Checking without folding
 

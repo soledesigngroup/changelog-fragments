@@ -71,11 +71,14 @@ entries. The docs that list the categories do so via `{{CATEGORIES}}` / `{{CATEG
 placeholders the installer fills from that array, so adding a category means changing
 `CATEGORY_ORDER` and re-running the installer — not a four-doc sync.
 
-**Only one fold runs at a time, and it writes atomically.** The fold takes `docs/changelog.d/.fold.lock`
-via `wx` (atomic create-or-fail, reclaimed if the holder pid is gone) and writes `changelog.md` through
-a temp file + `renameSync`. Fragment deletion uses `force: true` so an interrupted run is re-runnable
-instead of an ENOENT crash. Serializing the fold by convention was the last live instance of the race
-the whole system exists to remove.
+**Only one writer runs at a time, and every writer writes atomically.** The fold takes
+`docs/changelog.d/.fold.lock` via `wx` (atomic create-or-fail, reclaimed if the holder pid is gone)
+and writes `changelog.md` through a temp file + `renameSync`. A condense run that will write takes
+the **same lock** for its whole read→write span — its critical section is longer than the fold's,
+and a fold landing inside it would be silently overwritten — while `--plan` and `--dry-run` stay
+lock-free like `--report` (read-only, safe against a fold in flight). Fragment deletion uses
+`force: true` so an interrupted run is re-runnable instead of an ENOENT crash. Serializing writers
+by convention was the last live instance of the race the whole system exists to remove.
 
 **A refold can't duplicate, and same-day categories merge.** Fragment deletion happens after the
 atomic changelog write, so a fold killed between the two leaves already-folded fragments on disk;
@@ -123,7 +126,11 @@ operation, add its check. `--plan` is the read-only counterpart: it computes the
 anchors so the model never has to, and it must stay side-effect-free. `--auto --today <DATE>` derives
 and executes the whole run with **generated** summaries (each bullet's bold subject + first anchor
 link + issue refs — exactly the keys the fragment lint enforces), so a condense needs no model at
-all; the manual `--cl-mid` flow remains for hand-written prose.
+all; the manual `--cl-mid` flow remains for hand-written prose. When the checks do pass, the writes
+land **receiving file first** — year file, then archive, then changelog, each via temp + rename —
+because detail flows changelog→archive→year file: a crash between writes leaves the moved text in
+two files (Check J flags the duplicate loudly on the next run), never removed from one and not yet
+written to the other. Don't reorder those three lines.
 
 **The splice region is assembled, and cl-mid carries only new text.** `assembleRegion` re-opens the
 summary sentinel, re-emits legacy blocks and any unchanged `### DATE` / `### X to Y` entries the

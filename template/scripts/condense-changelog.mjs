@@ -64,6 +64,14 @@
  * per-day subject lines. Pre-1.1 summary-only dates are archived as-is, marked.
  * Suitable for cron/CI. Refuses to run while fragments are pending (Check L).
  *
+ * A run that will write takes the fold's own lock (`.fold.lock` in the
+ * changelog.d/ next to --changelog) for the whole read -> write span, so a fold
+ * can't land between this run's read and its write and be silently overwritten.
+ * --plan and --dry-run write nothing and stay lock-free. Writes go through a
+ * temp file + rename, receiving file first (year file, then archive, then
+ * changelog): a crash between writes leaves detail duplicated across two files
+ * — loud on the next run — never removed from one and not yet in the other.
+ *
  * Other flags:
  *   --dry-run   run every check and print the same report, then stop without writing
  *   -h, --help  print this header
@@ -139,7 +147,7 @@
  * Managed by changelog-fragments — re-run its install.mjs to update.
  */
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -986,6 +994,61 @@ function pendingFragments(changelogPath) {
   }
 }
 
+/**
+ * Take the fold's lock for a run that writes, or exit. This run reads the
+ * changelog, computes, and writes it back; a fold landing inside that span
+ * would be silently overwritten — the same read-modify-write race the fragment
+ * system exists to remove, so it is serialized on the same file with the same
+ * wx-create and dead-pid reclaim the fold uses. A missing changelog.d/ means no
+ * fold can run against this changelog at all: nothing to serialize with, no
+ * lock taken.
+ */
+function acquireFoldLock(changelogPath) {
+  const lockPath = join(dirname(resolve(changelogPath)), "changelog.d", ".fold.lock")
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx" })
+      process.on("exit", () => rmSync(lockPath, { force: true }))
+      return
+    } catch (err) {
+      if (err.code === "ENOENT") return // no changelog.d/ — no fold to serialize with
+      if (err.code !== "EEXIST") throw err
+      const holder = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10)
+      if (attempt === 0 && Number.isInteger(holder) && !isAlive(holder)) {
+        console.warn(`condense-changelog: reclaiming stale lock from dead pid ${holder}`)
+        rmSync(lockPath, { force: true })
+        continue
+      }
+      console.error(
+        `condense-changelog: a fold or another condense is running (pid ${holder || "unknown"}) — ` +
+          `wait for it, or delete ${lockPath} if you're certain it's stale.`
+      )
+      process.exit(1)
+    }
+  }
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err.code === "EPERM" // exists, owned by someone else
+  }
+}
+
+/** Write via temp file + rename so a crash can't leave a half-written file. */
+function writeAtomic(path, content) {
+  const tmp = `${path}.tmp-${process.pid}`
+  try {
+    writeFileSync(tmp, content)
+    renameSync(tmp, path)
+  } catch (err) {
+    rmSync(tmp, { force: true }) // don't leave a stray temp file in the tree
+    throw err
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Archive year shed (--shed-year)
 // ---------------------------------------------------------------------------
@@ -1206,6 +1269,11 @@ function main() {
   args.archive ??= DEFAULT_ARCHIVE
   const readArchive = () =>
     namedArchive || existsSync(args.archive) ? readRequired(args.archive, "--archive") : ""
+
+  // The critical section is this read -> the writes at the bottom of main.
+  // --plan and --dry-run never reach those writes, so they stay lock-free —
+  // the same rule that keeps --report safe to run against a fold in flight.
+  if (!args.plan && !args.dryRun) acquireFoldLock(args.changelog)
 
   const oldCl = readRequired(args.changelog, "--changelog")
   const fails = []
@@ -1553,9 +1621,12 @@ function main() {
     return 0
   }
 
-  writeFileSync(args.changelog, newCl)
-  if (doArchive || shed || autoArchived.length) writeFileSync(args.archive, newAr)
-  if (shed) writeFileSync(shed.yearPath, shed.yearText)
+  // Detail flows changelog -> archive -> year file, so the receiving file lands
+  // first: a crash between writes leaves the moved text in two files (loud on
+  // the next run, via Check J), never removed from one and not yet in the other.
+  if (shed) writeAtomic(shed.yearPath, shed.yearText)
+  if (doArchive || shed || autoArchived.length) writeAtomic(args.archive, newAr)
+  writeAtomic(args.changelog, newCl)
   console.log("Written.")
   return 0
 }

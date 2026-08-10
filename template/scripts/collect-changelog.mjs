@@ -46,7 +46,8 @@
  * edits a bullet to fix one (that would break the verbatim guarantee); fix the
  * fragment file while it still exists.
  *
- * Only one fold runs at a time (an exclusive `.fold.lock` in the fragment dir), and
+ * Only one writer runs at a time (an exclusive `.fold.lock` in the fragment dir,
+ * shared with condense-changelog.mjs, which holds it while it rewrites the file), and
  * changelog.md is written through a temp file + rename, so a killed fold leaves the
  * changelog either untouched or fully folded — never half-way. Fragment deletion
  * happens after that write; a fold killed between the two leaves already-folded
@@ -574,9 +575,9 @@ function acquireLock() {
         continue
       }
       console.error(
-        `[collect-changelog] another fold is running (pid ${holder || "unknown"}). The fold is ` +
-          `serialized on purpose — wait for it, or delete ${join(FRAGMENT_DIR, ".fold.lock")} if ` +
-          `you're certain it's stale.`
+        `[collect-changelog] another fold or condense is running (pid ${holder || "unknown"}). ` +
+          `Writers are serialized on purpose — wait for it, or delete ` +
+          `${join(FRAGMENT_DIR, ".fold.lock")} if you're certain it's stale.`
       )
       process.exit(1)
     }
