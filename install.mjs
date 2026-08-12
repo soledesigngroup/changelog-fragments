@@ -28,6 +28,10 @@ import { auditChangelog, CATEGORY_ORDER } from "./template/scripts/collect-chang
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TEMPLATE = join(HERE, "template")
+// This distributor's own version — stamped into the fragment README so an installed repo can answer
+// "which version of this system do I have?" without diffing its scripts against a tag. Note the
+// target repo's package.json is read further down and is an entirely different thing.
+const VERSION = JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")).version
 
 // ---------------------------------------------------------------------------
 
@@ -126,6 +130,9 @@ const SUBS = {
   "{{FOLD_CMD_CHECK}}": FOLD_CMD_CHECK,
   "{{FOLD_CMD_REPORT}}": FOLD_CMD_REPORT,
   "{{PROJECT_NAME}}": projectName,
+  // Belongs only in docs/changelog.d/README.md — the one seeded doc that is rewritten on every run,
+  // so the stamp tracks the scripts instead of freezing at whatever seeded the repo.
+  "{{VERSION}}": VERSION,
   // Both spellings of the category list the docs use, from the payload's array.
   "{{CATEGORIES}}": CATEGORY_ORDER.join(" / "),
   "{{CATEGORIES_BOLD}}": CATEGORY_ORDER.map((c) => `**${c}**`).join(", "),
@@ -243,7 +250,9 @@ if (hasPkg) {
 // --- Report ----------------------------------------------------------------
 
 const width = Math.max(...actions.map((a) => a.verb.length))
-console.log(`\nchangelog-fragments → ${target}${args.dryRun ? "  (dry run — nothing written)" : ""}\n`)
+console.log(
+  `\nchangelog-fragments v${VERSION} → ${target}${args.dryRun ? "  (dry run — nothing written)" : ""}\n`
+)
 for (const a of actions) {
   console.log(`  ${a.verb.padEnd(width)}  ${a.path}${a.note ? `  — ${a.note}` : ""}`)
 }

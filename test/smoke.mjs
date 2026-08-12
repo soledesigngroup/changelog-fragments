@@ -24,6 +24,8 @@ import assert from "node:assert/strict"
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, "..")
 const INSTALL = join(ROOT, "install.mjs")
+/** The version the installer stamps into the fragment README — read from the same source it does. */
+const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version
 
 const filter = process.argv[2] ?? null
 
@@ -2309,7 +2311,20 @@ group("condense path defaults", () => {
 
 group("fresh repo with no changelog", () => {
   const fresh = newRepo()
-  install(fresh, ["--name", "Fresh Project"])
+  const freshOut = install(fresh, ["--name", "Fresh Project"])
+
+  test("the fragment README names the installed version", () => {
+    const readme = read(fresh, "docs/changelog.d/README.md")
+    assert.ok(
+      readme.includes(`changelog-fragments v${VERSION}`),
+      `expected the stamp for v${VERSION}, got:\n${readme}`
+    )
+    assert.ok(!readme.includes("{{VERSION}}"), "placeholder shipped unsubstituted")
+  })
+
+  test("the installer reports the version it is installing", () => {
+    assert.match(freshOut, new RegExp(`changelog-fragments v${VERSION.replace(/\./g, "\\.")} →`), freshOut)
+  })
 
   test("changelog + archive are seeded", () => {
     const cl = read(fresh, "docs/changelog.md")
@@ -2404,6 +2419,17 @@ group("idempotency", () => {
     const out = install(repo)
     assert.equal(read(repo, "package.json"), snapshot)
     assert.ok(/unchanged\s+package\.json/.test(out))
+  })
+
+  test("an upgrade rewrites the version stamp instead of leaving the installed one", () => {
+    // The whole point of stamping the fragment README rather than a seeded changelog: this file is
+    // rewritten every run, so the version it names is the one whose scripts are actually here.
+    const rel = "docs/changelog.d/README.md"
+    write(repo, rel, read(repo, rel).replace(`v${VERSION}`, "v0.0.1"))
+    const out = install(repo)
+    assert.ok(read(repo, rel).includes(`changelog-fragments v${VERSION}`), read(repo, rel))
+    assert.ok(!read(repo, rel).includes("v0.0.1"), "stale stamp survived the upgrade")
+    assert.ok(new RegExp(`updated\\s+${rel.replace(/[./]/g, "\\$&")}`).test(out), out)
   })
 })
 

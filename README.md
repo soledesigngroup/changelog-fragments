@@ -96,7 +96,7 @@ platform-agnostic, but the documented workflows assume a POSIX shell (`$(date +%
 
 | Path | Purpose |
 |------|---------|
-| `docs/changelog.d/` + `README.md` | where fragments are written |
+| `docs/changelog.d/` + `README.md` | where fragments are written — the README also names the installed version |
 | `scripts/collect-changelog.mjs` | the fold — the only writer of `changelog.md`'s Tier-1 zone |
 | `scripts/condense-changelog.mjs` | the splice-and-verify helper behind `/changelog-condense` |
 | `.claude/commands/changelog-update.md` | `/changelog-update` — writes a fragment |
@@ -249,6 +249,11 @@ Re-run `install.mjs` against it. Scripts, commands, and the fragment README are 
 changelog files are never touched once migrated. `--dry-run` first if you want to see the diff
 surface, and `--no-commands` if that repo has customized the slash commands.
 
+To find out what a repo already has, read the last section of its `docs/changelog.d/README.md`. The
+installer stamps its own version there on every run, so the number names the scripts sitting beside
+it rather than whatever first seeded the repo — and the install itself prints the same version in its
+header line.
+
 ## Tests
 
 ```bash
@@ -277,7 +282,7 @@ that are load-bearing, so read that before changing behavior.
 
 Releases are tagged and noted in [CHANGELOG.md](CHANGELOG.md); each entry says whether re-running
 `install.mjs` over an existing installation is safe. Pin a version with
-`npx degit soledesigngroup/changelog-fragments#v1.2.0`.
+`npx degit soledesigngroup/changelog-fragments#v1.4.0`.
 
 ## License
 

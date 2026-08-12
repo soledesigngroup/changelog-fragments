@@ -240,12 +240,20 @@ seeded markdown. Changing one means changing it in **all** of them plus the temp
 ## Template substitution
 
 `install.mjs` replaces `{{FOLD_CMD}}`, `{{FOLD_CMD_DRY}}`, `{{FOLD_CMD_DRY_INLINE}}`,
-`{{FOLD_CMD_CHECK}}`, `{{FOLD_CMD_REPORT}}`, `{{PROJECT_NAME}}`, and the category-list pair
-`{{CATEGORIES}}` / `{{CATEGORIES_BOLD}}` (filled from the payload's exported `CATEGORY_ORDER`) when
-copying — but the two `.mjs` payload scripts are copied with `raw: true`,
+`{{FOLD_CMD_CHECK}}`, `{{FOLD_CMD_REPORT}}`, `{{PROJECT_NAME}}`, `{{VERSION}}`, and the category-list
+pair `{{CATEGORIES}}` / `{{CATEGORIES_BOLD}}` (filled from the payload's exported `CATEGORY_ORDER`)
+when copying — but the two `.mjs` payload scripts are copied with `raw: true`,
 so a placeholder written into them ships through literally. The `{{FOLD_CMD}}` pair resolves to
 `npm run changelog:fold` or bare `node scripts/collect-changelog.mjs` depending on whether the target
 has a `package.json`; both branches are covered by tests.
+
+`{{VERSION}}` is this repo's own `package.json` version, and it belongs in exactly one payload file:
+`template/docs/changelog.d/README.md`. That is the only seeded doc `copyTemplate` rewrites on every
+run, so the stamp tracks the scripts installed beside it. `changelog.md` and `changelog-archive.md`
+are written only when absent, so the same stamp there would freeze at whatever version seeded the
+repo — answering "which version is installed?" wrongly after the first upgrade, and not at all in a
+repo whose changelog was migrated rather than seeded. The payload scripts can't carry it either
+(`raw: true`), which is why the version lives in a doc and not in a `--version` flag.
 
 The installer deliberately **prints** the `CLAUDE.md` snippet rather than appending it — every
 target's `CLAUDE.md` is laid out differently.

@@ -117,3 +117,14 @@ finds the feature commit that introduced it rather than the mechanical fold
 commit.
 
 Everything in this directory except this `README.md` is transient.
+
+## Which version is installed
+
+**changelog-fragments v{{VERSION}}.**
+
+The installer rewrites this README and both `scripts/*-changelog.mjs` in the same run, so this names
+the payload currently in this repo rather than the one that first seeded it — re-run
+[`install.mjs`](https://github.com/soledesigngroup/changelog-fragments) and the line moves with the
+scripts. It is the only version marker an install leaves: `docs/changelog.md` and
+`docs/changelog-archive.md` are written once and never rewritten, so a stamp there would still be
+claiming the seed version several upgrades later.

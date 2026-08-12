@@ -12,7 +12,50 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.3.1`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.4.0`.
+
+---
+
+## [1.4.0] — 2026-08-12
+
+**Upgrade: recommended — re-run `install.mjs`. Safe on an existing installation**; no shared anchor,
+category, or filename convention changed, and every existing flag behaves identically. This is the
+release that makes "which version is installed?" answerable from inside a target repo, so the answer
+only exists going forward — a repo installed before this says nothing until it is re-installed.
+
+### Added
+
+- **An installed repo now names its version.** `docs/changelog.d/README.md` ends with a
+  `## Which version is installed` section filled from a new `{{VERSION}}` substitution, and the
+  installer prints the same number in its header line (`changelog-fragments v1.4.0 → /path/to/repo`).
+  The only provenance a target repo carried before was an unversioned "Managed by changelog-fragments"
+  comment at the top of each script, so telling a 1.2.0 install from a 1.3.1 one meant diffing the
+  scripts against a tag.
+- **The stamp lives in the fragment README on purpose.** That is the one seeded doc the installer
+  rewrites on *every* run, so the version it names is the version of the scripts sitting beside it.
+  `changelog.md` and `changelog-archive.md` are written only when absent — a stamp there would freeze
+  at whatever seeded the repo and start lying at the first upgrade, and a repo whose changelog was
+  *migrated* rather than seeded would never carry one at all. The payload scripts can't hold it
+  either: they are copied `raw: true`, which is exactly what lets them ship placeholders literally.
+  So there is no `--version` flag and `--report` prints no version — the number is a doc, not an API.
+
+### Fixed
+
+- **A writing condense now takes the fold's lock.** It is a read–modify–write of the same file the
+  fold writes, but it never held `.fold.lock` — fold-vs-condense was serialized by convention, the
+  exact race this whole system exists to remove. The lock is now held for the entire read→write span
+  (longer than the fold's, since a fold landing inside it would be silently overwritten), a dead
+  holder's lock is reclaimed, and it is released on every exit path. `--plan` and `--dry-run` stay
+  lock-free, like `--report`.
+- **A crashed condense can no longer destroy the detail it was moving.** Its writes land via temp
+  file + rename, **receiving file first** — year file, then archive, then changelog. Detail flows
+  changelog→archive→year file, so a crash between writes now leaves the moved text in two files
+  (Check J flags the duplicate loudly on the next run) instead of removed from one and not yet
+  written to the other. Previously the changelog was written first, so a crash before the archive
+  write silently destroyed the detail in flight.
+- **This file had lost its `## [1.2.0]` heading.** The 1.3.0 release commit replaced that heading
+  rather than inserting above it, so every 1.2.0 entry had been rendering as part of 1.3.0 since
+  2026-08-09. Restored with its original date; no entry text changed.
 
 ---
 
@@ -101,6 +144,10 @@ covers restated legacy blocks.
   the archive, so Check C passed, Check D only guards `##` headings, and no check covered a dropped
   week-range at all — the changelog just lost its index line with every check green. The assembler
   re-emits such entries instead; the plan no longer asks anyone to copy anything verbatim.
+
+---
+
+## [1.2.0] — 2026-08-03
 
 The observability release: one read-only command answers "is this system actually being used?"
 **Upgrade: optional — re-run `install.mjs`. Safe on an existing installation**; nothing about the
