@@ -108,8 +108,9 @@ nothing written. `---` is exempt from that comparison on both sides: it carries 
 migrator both inserts rules and re-emits them (a day block's trailing rule is popped and rewritten),
 so it is neither position- nor count-stable. Legacy day headings are kept byte-for-byte on purpose —
 normalizing them would mean merging same-date sections, i.e. editing history. A `## DATE (parenthetical)`
-is still readable by the fold *and* by condense, so it ages out; only a heading with no ISO date
-(`## [1.2.0]`) is opaque, and it just sinks as newer days land above it.
+and a `## [DATE]` are both readable by the fold *and* by condense, so they age out; a heading that
+doesn't *lead* with an ISO date (`## [1.2.0]`, `## [1.2.0] - 2026-03-29`) is opaque, and just sinks
+as newer days land above it.
 
 **The header rule goes above the first heading of any shape.** `tier1Bounds` takes the *first* `---` in
 the file as the top of Tier-1, so the rule the migrator inserts has to precede `## [Unreleased]` and
@@ -157,15 +158,26 @@ new day and Check E refuses the run. Pre-1.1 summary dates whose detail was neve
 into the archive as-is, marked `_Summary only …_`, because that summary is the only text that still
 exists.
 
+**`## [YYYY-MM-DD]` is a day.** A pre-1.0.1 migrator borrowed Keep a Changelog's bracket convention
+for the *date* rather than the version, and wrote whole histories that way — blocks in no tier, unable
+to age out, invisible to `--check`'s ordering and duplicate-category rules, and counted by `--report`
+as days with no date, so its coverage check called them **undocumented** while their full detail sat
+in the file. `H2_DAY_SRC` and `DAY_DATE_RE` accept the bracketed form; `## [1.2.0] - 2026-03-29` must
+stay opaque, so what follows `[` has to *be* the date — the brackets are not the signal. Brackets
+only: `## (2026-07-26)` and `## **2026-07-26**` stay unreadable and get *reported* (below) instead.
+Teaching the parser every delimiter someone might type is how it starts inventing days; brackets
+earned their place by being a real migrator's output, not by being imaginable.
+
 **"Nothing has aged out" is never said about a file the tools can't read.** A heading no regex here
-parses lands in no tier, so it feeds no cutoff — and a changelog made entirely of them (`##
-[2026-07-26]`, the pre-1.0.1 migration shape) classified cleanly into nothing and drew a green
-all-clear from `--plan` while months overdue, with `--check` calling the structure intact beside it.
+parses lands in no tier, so it feeds no cutoff — and a changelog made entirely of them classified
+cleanly into nothing and drew a green all-clear from `--plan` while months overdue, with `--check`
+calling the structure intact beside it.
 That is worse than an error: an agent told there is no work, looking at entries that plainly need it,
 edits the file by hand — which is how one downstream repo lost ~17.5k words. `planTiers` now returns
-`stuck` (an opaque `##` block whose heading *leads* with an ISO date — `STUCK_DAY_RE`) separately
-from `legacyOpaque` (everything else), and both `--plan` and `--auto` name the blocks, print the
-fix, and exit **1** when nothing readable aged out. Leading is the whole test: `## [Unreleased]` and
+`stuck` (an opaque `##` block whose heading *leads* with an ISO date in an unparsed wrapper —
+`STUCK_DAY_RE`) separately from `legacyOpaque` (everything else), and both `--plan` and `--auto`
+name the blocks, print the fix, and exit **1** when nothing readable aged out. It stays a reporting
+net, not a second parser. Leading is the whole test: `## [Unreleased]` and
 `## [1.2.0] - 2026-03-29` are opaque by design and stay quiet, because a warning that fires on every
 migrated Keep-a-Changelog repo forever is a warning nobody reads. When there *is* readable work, the
 run does it and warns that it was partial — gating there would only punish the half-fixable repo.
@@ -264,7 +276,8 @@ seeded markdown. Changing one means changing it in **all** of them plus the temp
   side knows is a tier the report silently counts as empty, and days the coverage check then calls
   undocumented.
   The Tier-1 shape tolerates **trailing text** with or without whitespace before it
-  (`## 2026-07-03 (parenthetical)`, `## 2026-07-03(retro)`), and refuses a following digit
+  (`## 2026-07-03 (parenthetical)`, `## 2026-07-03(retro)`), accepts the date in **square
+  brackets** (`## [2026-07-03]`), and refuses a following digit
   (`## 2026-07-263` is not a day). Condense spells that shape **once**, as `H2_DAY_SRC`, and the
   fold's `DAY_DATE_RE` must accept exactly the same thing. Four hand-spelled copies disagreed about
   `## 2026-07-20(retro)`, and the split was not cosmetic: `dayBlocksIn` read it as a day and moved

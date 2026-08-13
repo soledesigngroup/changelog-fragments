@@ -84,19 +84,20 @@
  * `--plan` and a Tier-4-only run need no paths spelled out. A path passed explicitly
  * must exist; the conventional archive merely being absent reads as "nothing archived".
  *
- * A day heading is `## YYYY-MM-DD` with any trailing text, whitespace before it or
- * not (`## 2026-07-03 (parenthetical)`, `## 2026-07-03(retro)`) — one shape, spelled
- * once as H2_DAY_SRC and matching the fold's DAY_DATE_RE exactly. A legacy heading
- * the migrator preserved ages out like any other day instead of being invisible here
- * and stuck in Tier 1 forever, and no two readers can disagree about one.
+ * A day heading is `## YYYY-MM-DD`, optionally in square brackets, with any trailing
+ * text and no whitespace required before it — `## 2026-07-03 (parenthetical)`,
+ * `## 2026-07-03(retro)`, `## [2026-07-03]` are all one day. One shape, spelled once
+ * as H2_DAY_SRC and matching the fold's DAY_DATE_RE exactly, so a heading a migrator
+ * preserved ages out like any other instead of being stuck in Tier 1 forever, and no
+ * two readers can disagree about one.
  *
  * A `##` block this script can't classify is COUNTED, never assumed away. One that
- * leads with a date in a shape it can't parse (`## [2026-07-26]`) is stuck: in no
+ * leads with a date in a wrapper it can't parse (`## (2026-07-26)`) is stuck: in no
  * tier, never swept into a splice region, unable to age out. --plan and --auto name
  * those blocks and exit 1 rather than report "nothing has aged out" about a file
  * they never parsed; with real work also pending they do the work and warn. A block
- * with no leading date (`## [Unreleased]`, `## [1.2.0] - 2026-03-29`) is the
- * documented legacy zone: counted, reported, and otherwise left alone.
+ * whose leading token isn't a date (`## [Unreleased]`, `## [1.2.0] - 2026-03-29`) is
+ * the documented legacy zone: counted, reported, and otherwise left alone.
  *
  * Exit 0 = wrote (or would have written), or a plan that answers the question.
  * Exit 1 = verification failed (nothing written), or the file is too unreadable for
@@ -197,8 +198,18 @@ const DEFAULT_ARCHIVE = join(ROOT, "docs/changelog-archive.md")
  *
  * A digit may not follow the date: `## 2026-07-263` is not 2026-07-26 plus a
  * stray `3`, and both sides now agree it is opaque rather than one side dating it.
+ *
+ * SQUARE BRACKETS around the date are accepted — `## [2026-07-26]` — because a
+ * pre-1.0.1 migrator wrote whole histories that way, borrowing Keep a Changelog's
+ * bracket convention for the date instead of the version. Those blocks were in no
+ * tier and could never age out; one repo's entire history sat in that shape.
+ * `## [1.2.0] - 2026-03-29` still doesn't match and must not: what follows `[` has
+ * to BE the date, so a bracketed version stays the opaque legacy zone it is.
+ * Brackets only — `## (2026-07-26)` and `## **2026-07-26**` stay unreadable AND
+ * get reported by STUCK_DAY_RE, which is the right trade: guessing at every
+ * wrapper someone might type is how a parser starts inventing days.
  */
-const H2_DAY_SRC = String.raw`^##[ \t]+(\d{4}-\d{2}-\d{2})(?!\d)[ \t]*(.*?)[ \t]*$`
+const H2_DAY_SRC = String.raw`^##[ \t]+\[?(\d{4}-\d{2}-\d{2})(?!\d)\]?[ \t]*(.*?)[ \t]*$`
 const reH2Day = () => new RegExp(H2_DAY_SRC, "gm")
 /**
  * The same shape against a single line — m[1] = date, m[2] = trailing text.
@@ -213,14 +224,20 @@ const reAnyHeading = () =>
   /^#{2,3} (\d{4}-\d{2}-\d{2})(?: to (\d{4}-\d{2}-\d{2}))?[ \t]*$/gm
 
 /**
- * A `##` heading that LEADS with an ISO date wrapped in punctuation this file
- * can't read — `## [2026-07-26]`, `## (2026-07-26)`, `## **2026-07-26**`.
+ * A `##` heading that LEADS with an ISO date in a wrapper this file can't read —
+ * `## (2026-07-26)`, `## **2026-07-26**`, `## _2026-07-26_`. Square brackets are
+ * NOT among them: H2_DAY_SRC parses those, so they never reach this test.
  *
- * That block is STUCK: in no tier, never swept into a splice region, unable to
+ * Such a block is STUCK: in no tier, never swept into a splice region, unable to
  * ever age out. It reads as an ordinary opaque legacy block, which is why
  * `--plan` used to answer "nothing has aged out yet" on a changelog where every
  * single day was months overdue — a green light an agent then acted on by
  * summarizing history in the editor instead. Reported, never guessed at.
+ *
+ * This stays a *reporting* net rather than growing into the parser one wrapper at
+ * a time. Teaching H2_DAY_SRC every delimiter someone might type is how a parser
+ * starts inventing days; brackets earned their place by being a real migrator's
+ * output across whole histories, not by being imaginable.
  *
  * Leading is the whole test, so the genuinely opaque legacy zone stays quiet:
  * `## [1.2.0] - 2026-03-29` leads with a version and `## [Unreleased]` with a

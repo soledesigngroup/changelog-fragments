@@ -49,12 +49,12 @@ multi-step flow; the archive holds the full text either way.
 ## If it says the changelog is unreadable
 
 `--plan` and `--auto` exit **non-zero** when the file holds `##` blocks whose date they can't parse
-(`## [2026-07-26]` and the like) and nothing they *can* read has aged out. They print each heading
-and the shape they need.
+(`## (2026-07-26)`, `## **2026-07-26**`) and nothing they *can* read has aged out. They print each
+heading and the shape they need.
 
 **Fix the headings; do not condense by hand.** Rewrite each one as `## YYYY-MM-DD` — trailing text
-after the date is fine (`## 2026-07-26 (retro)`) — and leave every body line byte-for-byte, then
-re-run. Summarizing those entries yourself is the failure this refusal exists to prevent: the
+after the date is fine (`## 2026-07-26 (retro)`), and square brackets around it are read too
+(`## [2026-07-26]`) — and leave every body line byte-for-byte, then re-run. Summarizing those entries yourself is the failure this refusal exists to prevent: the
 archive is populated by the script, so detail rewritten in an editor is detail gone, and the run
 that would have moved it verbatim never happens.
 

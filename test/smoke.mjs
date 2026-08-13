@@ -1179,21 +1179,25 @@ Early July theme summary.
 })
 
 group("condense refuses a false all-clear", () => {
-  // The shape that cost a downstream repo ~17.5k words. A pre-1.0.1 migration
-  // left every day heading as `## [YYYY-MM-DD]`, which no day regex in either
-  // script reads. --plan therefore classified nothing into any tier, printed
-  // "Nothing has aged out yet — no condense run needed today", and exited 0 on a
-  // changelog months overdue. The agent that read that condensed it by hand.
+  // A day heading no regex reads lands in no tier, so it feeds no cutoff: --plan
+  // classified nothing, printed "Nothing has aged out yet — no condense run needed
+  // today", and exited 0 on a changelog months overdue. An agent read that and
+  // condensed by hand, which is what cost a downstream repo ~17.5k words.
   //
   // The tier tables of "nothing aged out" and "nothing I can READ aged out" are
-  // identical; only this distinction separates them.
-  const bracketed = (days) =>
+  // identical; only this distinction separates them. The specific shape that did
+  // the damage (`## [YYYY-MM-DD]`) is parsed now — see the group below — so these
+  // use a wrapper still nobody guesses at, which is the point: the net has to
+  // catch shapes the parser was never taught, not just the one that got away.
+  const wrapped = (days, open = "(", close = ")") =>
     [
       "# Changelog",
       "",
       "---",
       "",
-      ...days.flatMap((d) => [`## [${d}]`, "", "### Added", `- **Entry for ${d}** — detail.`, "", "---", ""]),
+      ...days.flatMap((d) => [
+        `## ${open}${d}${close}`, "", "### Added", `- **Entry for ${d}** — detail.`, "", "---", "",
+      ]),
       "## Earlier Changes (Summary)",
       "",
       "_Nothing has aged out yet._",
@@ -1202,10 +1206,10 @@ group("condense refuses a false all-clear", () => {
       "",
     ].join("\n")
 
-  const bracketedRepo = (days) => {
+  const wrappedRepo = (days, open, close) => {
     const dir = newRepo({ "package.json": '{\n  "name": "opaque"\n}\n' })
     install(dir)
-    write(dir, "docs/changelog.md", bracketed(days))
+    write(dir, "docs/changelog.md", wrapped(days, open, close))
     return dir
   }
   const DAYS = ["2026-07-26", "2026-07-20", "2026-06-15"]
@@ -1213,35 +1217,35 @@ group("condense refuses a false all-clear", () => {
   test("every other gate still calls this file healthy", () => {
     // Why --plan had to be the one to notice: --check reads structure, not
     // classifiability, and a file can be perfectly structured and unreadable.
-    const r = foldAttempt(bracketedRepo(DAYS), ["--check"])
+    const r = foldAttempt(wrappedRepo(DAYS), ["--check"])
     assert.equal(r.status, 0, r.out)
     assert.match(r.out, /structure intact/)
   })
 
   test("--plan says it is NOT an all-clear, and exits non-zero", () => {
-    const r = condense(bracketedRepo(DAYS), [...CL_AR, "--plan", "--today", "2026-08-13"])
+    const r = condense(wrappedRepo(DAYS), [...CL_AR, "--plan", "--today", "2026-08-13"])
     assert.equal(r.status, 1, r.out)
     assert.match(r.out, /NOT an all-clear/, r.out)
     assert.doesNotMatch(r.out, /Nothing has aged out yet/, "the exact sentence that misled")
   })
 
   test("--plan names every unreadable block and the fix", () => {
-    const r = condense(bracketedRepo(DAYS), [...CL_AR, "--plan", "--today", "2026-08-13"])
+    const r = condense(wrappedRepo(DAYS), [...CL_AR, "--plan", "--today", "2026-08-13"])
     assert.match(r.out, /UNREADABLE — in no tier, cannot age out\s*: 3 block\(s\)/, r.out)
-    for (const d of DAYS) assert.ok(r.out.includes(`## [${d}]`), `names ${d}: ${r.out}`)
+    for (const d of DAYS) assert.ok(r.out.includes(`## (${d})`), `names ${d}: ${r.out}`)
     assert.match(r.out, /A day heading must be '## YYYY-MM-DD'/)
   })
 
   test("more than eight are summarized, never silently truncated", () => {
     const many = ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05",
       "2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10"]
-    const r = condense(bracketedRepo(many), [...CL_AR, "--plan", "--today", "2026-08-13"])
+    const r = condense(wrappedRepo(many), [...CL_AR, "--plan", "--today", "2026-08-13"])
     assert.match(r.out, /10 '##' block\(s\) lead with a date/, r.out)
     assert.match(r.out, /… and 2 more/, r.out)
   })
 
   test("--auto refuses instead of reporting 'nothing to do'", () => {
-    const repo = bracketedRepo(DAYS)
+    const repo = wrappedRepo(DAYS)
     const before = read(repo, "docs/changelog.md")
     const r = condense(repo, ["--auto", "--today", "2026-08-13"])
     assert.equal(r.status, 1, r.out)
@@ -1275,11 +1279,11 @@ group("condense refuses a false all-clear", () => {
   test("unreadable blocks beside real work warn, and the work still runs", () => {
     // Gating this would only punish the repo that is half fixable: the readable
     // entries genuinely have aged out, and the splice conserves the rest (Check K).
-    const repo = bracketedRepo(DAYS)
+    const repo = wrappedRepo(DAYS)
     write(
       repo,
       "docs/changelog.md",
-      bracketed(DAYS).replace(
+      wrapped(DAYS).replace(
         "## Earlier Changes",
         "## 2026-07-30\n\n### Fixed\n- **Readable and overdue** — q.\n\n---\n\n## Earlier Changes"
       )
@@ -1294,8 +1298,103 @@ group("condense refuses a false all-clear", () => {
     assert.match(run.out, /WARNING — this run is partial/, run.out)
     const cl = read(repo, "docs/changelog.md")
     assert.match(cl, /^### 2026-07-30$/m, "the readable day condensed")
-    for (const d of DAYS) assert.ok(cl.includes(`## [${d}]`), `${d} conserved verbatim`)
+    for (const d of DAYS) assert.ok(cl.includes(`## (${d})`), `${d} conserved verbatim`)
     assert.ok(read(repo, "docs/changelog-archive.md").includes("- **Readable and overdue** — q."))
+  })
+})
+
+group("a bracketed day heading is a day", () => {
+  // `## [2026-07-26]` is what a pre-1.0.1 migrator wrote — it borrowed Keep a
+  // Changelog's bracket convention for the DATE rather than the version. Whole
+  // histories landed in that shape, in no tier, unable to ever age out.
+  const bracketedRepo = (days, extraHeadings = []) => {
+    const dir = newRepo({ "package.json": '{\n  "name": "bracket"\n}\n' })
+    install(dir)
+    write(
+      dir,
+      "docs/changelog.md",
+      [
+        "# Changelog", "", "---", "",
+        ...days.flatMap((d) => [
+          `## [${d}]`, "", "### Added", `- **Entry for ${d}** — detail. [\`a.js\`](../src/a.js)`, "", "---", "",
+        ]),
+        ...extraHeadings.flatMap((h) => [h, "", "### Added", "- Legacy body.", "", "---", ""]),
+        "## Earlier Changes (Summary)", "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)", "",
+      ].join("\n")
+    )
+    return dir
+  }
+
+  test("it classifies into a tier instead of sitting outside all of them", () => {
+    const r = condense(bracketedRepo(["2026-07-26", "2026-07-20", "2026-06-15"]), [
+      ...CL_AR, "--plan", "--today", "2026-07-26",
+    ])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Tier 1 .*\(>= 2026-07-23\): 2026-07-26/, r.out)
+    assert.match(r.out, /Tier 2 .*\(>= 2026-07-12\): 2026-07-20/, r.out)
+    assert.match(r.out, /Tier 3 .*\(>= 2026-06-14\): 2026-06-15/, r.out)
+    assert.doesNotMatch(r.out, /UNREADABLE/, "parsed now, not merely reported")
+  })
+
+  test("a bracketed version heading stays opaque — the brackets aren't the signal", () => {
+    // `## [1.2.0] - 2026-03-29` carries a date too. What follows '[' has to BE the
+    // date, or every Keep-a-Changelog release heading becomes a day.
+    const repo = newRepo({ "docs/changelog.md": KEEP_A_CHANGELOG })
+    install(repo)
+    const r = condense(repo, [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Nothing has aged out yet/, r.out)
+    assert.doesNotMatch(r.out, /2026-03-29/, "the release heading is not a day")
+    assert.match(r.out, /legacy, no date — kept as is, never condensed\s*: 3 block\(s\)/, r.out)
+  })
+
+  test("it ages out end to end, detail archived verbatim", () => {
+    const repo = bracketedRepo(["2026-07-26", "2026-07-20", "2026-06-15"])
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.match(cl, /^## \[2026-07-26\]$/m, "Tier 1 heading untouched, brackets and all")
+    assert.doesNotMatch(cl, /^## \[2026-07-20\]$/m, "aged out of Tier 1")
+    assert.match(cl, /^### 2026-07-20$/m, "and landed in the summary, canonicalized")
+    const ar = read(repo, "docs/changelog-archive.md")
+    assert.ok(ar.includes("- **Entry for 2026-07-20** — detail. [`a.js`](../src/a.js)"), ar)
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("--check now orders and audits those blocks instead of skipping them", () => {
+    // They were invisible to the ordering and duplicate-category rules too, so a
+    // file could be visibly broken and pass. Both fire now.
+    const repo = bracketedRepo(["2026-06-15", "2026-07-26"]) // ascending — wrong
+    const r = foldAttempt(repo, ["--check"])
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /out of order.*2026-07-26.*2026-06-15/s, r.out)
+  })
+
+  test("a fold no longer files a late fragment above a newer bracketed day", () => {
+    // The insert scan stops at the first heading it can't date. With these opaque,
+    // every folded day landed on top of history that was newer than it — silently,
+    // since the ordering check couldn't see those headings either.
+    const repo = bracketedRepo(["2026-07-30"])
+    fragment(repo, "2026-07-26-late-ab12.md", "### Fixed\n- **Late fold** — q.\n")
+    fold(repo)
+    const cl = read(repo, "docs/changelog.md")
+    assert.ok(
+      cl.indexOf("## [2026-07-30]") < cl.indexOf("## 2026-07-26"),
+      `newer day stays on top:\n${cl}`
+    )
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("--report knows their dates, so coverage stops calling those days undocumented", () => {
+    // The census counted the blocks all along but not their dates — and the dates
+    // are what the git coverage check tests a day against. A day with a full block
+    // in the file counted as undocumented, which is the one failure mode that
+    // whole section exists to surface.
+    const repo = bracketedRepo(["2026-07-26", "2026-07-20"])
+    const out = run("node", ["scripts/collect-changelog.mjs", "--report"], repo)
+    assert.match(out, /day blocks\s+2\s+2026-07-26 → 2026-07-20/, out)
+    assert.match(out, /legacy headings\s+2/, out, "still flagged as non-canonical")
   })
 })
 
