@@ -55,14 +55,17 @@
  *
  * Planning: --plan --today <DATE> writes nothing and prints which headings fall in
  * which tier plus the exact anchor/cutoff flags to use. Prefer it over working the
- * dates out by hand.
+ * dates out by hand. It also counts the `##` blocks it CANNOT classify and refuses
+ * to call the run an all-clear while any of them lead with a date — see below.
  *
  * Deterministic mode: --auto --today <DATE> derives the plan and executes it in one
  * step with generated summaries — Tier-2 entries keep each bullet's subject + first
  * anchor link + issue refs; Tier-3 ranges are one per absolute calendar week
  * (extending a partial week's existing range instead of adding a second one) with
- * per-day subject lines. Pre-1.1 summary-only dates are archived as-is, marked.
- * Suitable for cron/CI. Refuses to run while fragments are pending (Check L).
+ * per-day subject lines, and a week that holds a single day is written as that day
+ * rather than as a range from it to itself. Pre-1.1 summary-only dates are archived
+ * as-is, marked. Suitable for cron/CI. Refuses to run while fragments are pending
+ * (Check L), and refuses to report "nothing to do" on a file it can't fully read.
  *
  * A run that will write takes the fold's own lock (`.fold.lock` in the
  * changelog.d/ next to --changelog) for the whole read -> write span, so a fold
@@ -81,12 +84,23 @@
  * `--plan` and a Tier-4-only run need no paths spelled out. A path passed explicitly
  * must exist; the conventional archive merely being absent reads as "nothing archived".
  *
- * A day heading is `## YYYY-MM-DD` with any trailing text — the same shape the fold
- * accepts, so a legacy `## 2026-07-03 (parenthetical)` preserved by the migrator ages
- * out like any other day instead of being invisible here and stuck in Tier 1 forever.
+ * A day heading is `## YYYY-MM-DD` with any trailing text, whitespace before it or
+ * not (`## 2026-07-03 (parenthetical)`, `## 2026-07-03(retro)`) — one shape, spelled
+ * once as H2_DAY_SRC and matching the fold's DAY_DATE_RE exactly. A legacy heading
+ * the migrator preserved ages out like any other day instead of being invisible here
+ * and stuck in Tier 1 forever, and no two readers can disagree about one.
  *
- * Exit 0 = wrote (or would have written). Exit 1 = verification failed, nothing
- * written. Exit 2 = bad arguments.
+ * A `##` block this script can't classify is COUNTED, never assumed away. One that
+ * leads with a date in a shape it can't parse (`## [2026-07-26]`) is stuck: in no
+ * tier, never swept into a splice region, unable to age out. --plan and --auto name
+ * those blocks and exit 1 rather than report "nothing has aged out" about a file
+ * they never parsed; with real work also pending they do the work and warn. A block
+ * with no leading date (`## [Unreleased]`, `## [1.2.0] - 2026-03-29`) is the
+ * documented legacy zone: counted, reported, and otherwise left alone.
+ *
+ * Exit 0 = wrote (or would have written), or a plan that answers the question.
+ * Exit 1 = verification failed (nothing written), or the file is too unreadable for
+ * the answer to mean anything. Exit 2 = bad arguments.
  *
  * Example (Tier 2/3 + Tier 4 in one run):
  *   node scripts/condense-changelog.mjs \
@@ -167,17 +181,52 @@ const DEFAULT_ARCHIVE = join(ROOT, "docs/changelog-archive.md")
 
 // Fresh regex per call — a shared /g regex carries lastIndex between scans.
 /**
- * A full-detail day heading. Deliberately tolerant of the legacy trailing text the
- * migrator preserves (`## 2026-07-03 (DocuSeal implementation plan)`) — this has to
- * accept exactly what the fold's DAY_DATE_RE accepts, or a legacy day is ordered
- * correctly by the fold yet invisible here: classified into no tier, never swept
- * into a splice region, and unable to ever age out.
+ * THE full-detail day heading shape — one source, because every reader in this
+ * file has to agree with every other one AND with the fold's DAY_DATE_RE.
+ *
+ * Deliberately tolerant of the legacy trailing text the migrator preserves
+ * (`## 2026-07-03 (DocuSeal implementation plan)`), with no whitespace required
+ * before it: `## 2026-07-20(retro)` is one heading, and four regexes spelled out
+ * by hand disagreed about it. `dayBlocksIn` read it as a day and moved its detail
+ * to the archive; `legacyBlocksIn` and `parseRegionBlocks` read it as an opaque
+ * legacy block and re-emitted it into the changelog; `reH2Day` saw nothing, so
+ * the "did it survive the splice?" test looked for a date the new file could
+ * never report. Every check passed on a run that left the same day's detail in
+ * both files, permanently — the block stays in Tier 1, so nothing ever moves it
+ * again. m[1] is the date, m[2] the trailing text (trimmed, "" when absent).
+ *
+ * A digit may not follow the date: `## 2026-07-263` is not 2026-07-26 plus a
+ * stray `3`, and both sides now agree it is opaque rather than one side dating it.
  */
-const reH2Day = () => /^##[ \t]+(\d{4}-\d{2}-\d{2})(?:[ \t].*)?$/gm
+const H2_DAY_SRC = String.raw`^##[ \t]+(\d{4}-\d{2}-\d{2})(?!\d)[ \t]*(.*?)[ \t]*$`
+const reH2Day = () => new RegExp(H2_DAY_SRC, "gm")
+/**
+ * The same shape against a single line — m[1] = date, m[2] = trailing text.
+ * Safe to share one instance, unlike the /g scanners above: no `g` flag means no
+ * `lastIndex` to carry between calls.
+ */
+const RE_H2_DAY_LINE = new RegExp(H2_DAY_SRC)
+const matchH2Day = (line) => line.match(RE_H2_DAY_LINE)
 const reH3Date = () => /^### (\d{4}-\d{2}-\d{2})[ \t]*$/gm
 const reH3Range = () => /^### (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})[ \t]*$/gm
 const reAnyHeading = () =>
   /^#{2,3} (\d{4}-\d{2}-\d{2})(?: to (\d{4}-\d{2}-\d{2}))?[ \t]*$/gm
+
+/**
+ * A `##` heading that LEADS with an ISO date wrapped in punctuation this file
+ * can't read — `## [2026-07-26]`, `## (2026-07-26)`, `## **2026-07-26**`.
+ *
+ * That block is STUCK: in no tier, never swept into a splice region, unable to
+ * ever age out. It reads as an ordinary opaque legacy block, which is why
+ * `--plan` used to answer "nothing has aged out yet" on a changelog where every
+ * single day was months overdue — a green light an agent then acted on by
+ * summarizing history in the editor instead. Reported, never guessed at.
+ *
+ * Leading is the whole test, so the genuinely opaque legacy zone stays quiet:
+ * `## [1.2.0] - 2026-03-29` leads with a version and `## [Unreleased]` with a
+ * word, and both are documented as sinking harmlessly under newer days.
+ */
+const STUCK_DAY_RE = /^##[ \t]+[^\w\s]{1,2}[ \t]*\d{4}-\d{2}-\d{2}/
 
 const FOOTER = "> Full per-day details available in"
 const SENTINEL = "## Earlier Changes (Summary)"
@@ -238,8 +287,8 @@ function dayBlocksIn(text) {
   for (const line of text.split("\n")) {
     if (/^##[ \t]/.test(line)) {
       if (cur) blocks.push(cur)
-      const m = line.match(/^##[ \t]+(\d{4}-\d{2}-\d{2})[ \t]*(.*)$/)
-      cur = m ? { date: m[1], trailing: m[2].trim(), body: [] } : null
+      const m = matchH2Day(line)
+      cur = m ? { date: m[1], trailing: m[2], body: [] } : null
     } else if (cur) {
       cur.body.push(line)
     }
@@ -262,8 +311,8 @@ function legacyBlocksIn(text) {
   for (const line of text.split("\n")) {
     if (/^##[ \t]/.test(line)) {
       if (cur) blocks.push(cur)
-      const isDay = /^##[ \t]+\d{4}-\d{2}-\d{2}([ \t].*)?$/.test(line)
-      const isSentinel = /^##\s+Earlier Changes/i.test(line)
+      const isDay = matchH2Day(line) !== null
+      const isSentinel = reSentinel.test(line)
       cur = !isDay && !isSentinel ? { heading: line, body: [] } : null
     } else if (cur) {
       cur.body.push(line)
@@ -294,7 +343,7 @@ function parseRegionBlocks(text, label, problems) {
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li]
     if (/^##[ \t]/.test(line)) {
-      const day = line.match(/^##[ \t]+(\d{4}-\d{2}-\d{2})(?:[ \t].*)?$/)
+      const day = matchH2Day(line)
       if (day) cur = { kind: "h2day", date: day[1], heading: line.trimEnd(), body: [] }
       else if (reSentinel.test(line)) cur = { kind: "sentinel", heading: SENTINEL, body: [] }
       else cur = { kind: "legacy", heading: line.trimEnd(), body: [] }
@@ -741,6 +790,16 @@ function planTiers(clText, arText, today, { autoRanges = false } = {}) {
     }
   }
 
+  // Blocks no reader here can classify. `stuck` is the load-bearing half: a day
+  // heading in a shape this file can't parse is invisible to every tier, so it
+  // contributes nothing to `condensing`/`collapsing` and the run below reports
+  // "nothing has aged out" — indistinguishable, until now, from a changelog that
+  // genuinely has nothing to do. `legacyOpaque` is the benign remainder, carried
+  // through untouched by design; it is counted so the two are never conflated.
+  const opaqueHeads = legacyBlocksIn(clText).map((b) => b.heading.trim())
+  const stuck = opaqueHeads.filter((h) => STUCK_DAY_RE.test(h))
+  const legacyOpaque = opaqueHeads.filter((h) => !STUCK_DAY_RE.test(h))
+
   // The archive can shed its oldest complete year once it's big enough to matter.
   const arYears = uniqSorted([...arText.matchAll(reAnyHeading())].map((m) => m[1].slice(0, 4)))
   const arLines = arText ? arText.split("\n").length : 0
@@ -763,12 +822,39 @@ function planTiers(clText, arText, today, { autoRanges = false } = {}) {
     needArContent,
     legacyInRegion,
     mergeRangeKeys,
+    stuck,
+    legacyOpaque,
     arBefore,
     needsArchive: needArContent.length > 0,
     dropRangesBefore: tier3From,
     shedYear,
     archiveLines: arLines,
   }
+}
+
+/**
+ * The unreadable `##` blocks, spelled out with the fix. Shared by --plan and
+ * --auto so both name the problem identically — the failure this exists to stop
+ * is a caller being told there is nothing to do and believing it.
+ */
+function unreadableReport(stuck) {
+  const out = [
+    `${stuck.length} '##' block(s) lead with a date this tooling cannot read, so they sit in`,
+    "no tier at all and no condense run can ever move them:",
+    "",
+  ]
+  for (const h of stuck.slice(0, 8)) out.push(`    ${h}`)
+  if (stuck.length > 8) out.push(`    … and ${stuck.length - 8} more`)
+  out.push(
+    "",
+    "  A day heading must be '## YYYY-MM-DD'. Trailing text after the date is fine",
+    "  ('## 2026-07-26 (retro)'); brackets or emphasis around it are not.",
+    "",
+    "  Fix the headings — leaving every body line byte-for-byte — and re-run. Do not",
+    "  summarize or trim these entries by hand instead: this script is what moves detail",
+    "  to the archive, and detail rewritten in an editor is detail gone."
+  )
+  return out.join("\n")
 }
 
 /** Human-readable plan + the exact command to run. */
@@ -787,12 +873,43 @@ function formatPlan(p, args) {
     `  Tier 4  week-ranges to drop          (end < ${p.tier3From}): ` +
       list(p.droppableRanges.map(([x, y]) => `${x} to ${y}`))
   )
+  // Same column as the tier rows above: an unreadable block is not a fifth tier,
+  // it is the reason a tier row above it may be lying by omission.
+  const extraRow = (tag, label, n) => `  ${tag.padEnd(6)}  ${label.padEnd(44)}: ${n} block(s)`
+  if (p.stuck.length)
+    out.push(extraRow("??", "UNREADABLE — in no tier, cannot age out", p.stuck.length))
+  if (p.legacyOpaque.length)
+    out.push(extraRow("--", "legacy, no date — kept as is, never condensed", p.legacyOpaque.length))
   out.push("")
 
   if (!p.clStart && !p.droppableRanges.length) {
+    // The distinction this branch exists to make. "Nothing aged out" and
+    // "nothing I can READ aged out" are the same tier tables and opposite
+    // situations, and reporting the second as the first is how a changelog gets
+    // hand-edited: the tool says there is no work, the entries plainly need it.
+    if (p.stuck.length) {
+      out.push(
+        "NOT an all-clear. Nothing this tool can read has aged out — but it cannot read",
+        "everything in this file, so it has no idea whether a condense is due.",
+        "",
+        unreadableReport(p.stuck)
+      )
+      return out.join("\n")
+    }
     out.push("Nothing has aged out yet — no condense run needed today.")
     return out.join("\n")
   }
+
+  if (p.stuck.length)
+    out.push(
+      "WARNING — the plan below is partial:",
+      "",
+      unreadableReport(p.stuck),
+      "",
+      "The run described below is still correct for the entries it CAN read; it splices",
+      "around the blocks above and conserves them (Check K). Fix them to age them out.",
+      ""
+    )
 
   out.push(
     "Deterministic option — no temp files, no summaries to write; generates every tier from the",
@@ -956,13 +1073,33 @@ function buildAutoMid(clText, plan) {
     let from = days[0]
     let to = days[days.length - 1]
     const body = []
+    let extending = false
     for (const r of summaryBlocks.filter(
       (b) => b.kind === "range" && mergeKeys.has(`${b.from} to ${b.to}`) && weekBucket(b.from) === k
     )) {
+      extending = true
       if (r.from < from) from = r.from
       if (r.to > to) to = r.to
       body.push(...r.body)
     }
+
+    // A week that holds exactly one day is written as that day, not as a range
+    // from it to itself. `### D to D` was valid to every regex and wrong to every
+    // reader: it claims a span that doesn't exist, and --report filed it under
+    // "summary ranges" so a repo whose Tier 3 was all single days reported zero
+    // summary days. The entry keeps Tier-3 content (subject + refs, no links —
+    // those live on in the archive), which is exactly what a later run reads back
+    // out of it if more days in this week arrive and it becomes a real range.
+    //
+    // Only when nothing is being extended: merging into an existing range has to
+    // keep the range shape, or the old heading would survive beside the new day
+    // and Check E would refuse the run for covering one with the other.
+    if (!extending && from === to) {
+      const items = bulletsOf(sourceBody(from)).map((b) => `- ${tier3Item(b)}`)
+      parts.push(items.length ? `### ${from}\n${items.join("\n")}` : `### ${from}`)
+      continue
+    }
+
     for (const d of [...days].reverse()) {
       const items = bulletsOf(sourceBody(d)).map(tier3Item)
       body.push(`- ${d} — ${items.join("; ")}`)
@@ -1337,8 +1474,15 @@ function main() {
         `NOTE: ${pending.length} pending fragment(s) in docs/changelog.d — fold them first so ` +
           `this plan (and the run it prints) sees a complete file.\n`
       )
-    console.log(formatPlan(planTiers(oldCl, readArchive(), args.today), args))
-    return 0
+    const plan = planTiers(oldCl, readArchive(), args.today)
+    console.log(formatPlan(plan, args))
+    // A plan is read-only, so it exits 0 on everything it can answer — including
+    // a genuine "nothing to do". The one non-zero case is the one where it cannot
+    // answer at all: unreadable blocks and no readable work, where returning 0
+    // would be reporting "no condense needed" about a file it never parsed.
+    // A partial plan (unreadable blocks AND real work) warns and still exits 0 —
+    // that work is worth doing, and gating it would only stop the fixable case.
+    return plan.stuck.length && !plan.clStart && !plan.droppableRanges.length ? 1 : 0
   }
   if (args.today && !args.auto) usageError("--today is only meaningful with --plan or --auto")
 
@@ -1363,9 +1507,25 @@ function main() {
     }
     const plan = planTiers(oldCl, readArchive(), args.today, { autoRanges: true })
     if (!plan.clStart && !plan.droppableRanges.length && !plan.shedYear) {
+      // Same distinction --plan makes, and the more important place to make it:
+      // this is the command cron and /changelog-condense actually run, so "nothing
+      // to do" here is the sentence a caller acts on.
+      if (plan.stuck.length) {
+        fails.push(
+          "unreadable changelog: nothing this script can read has aged out, and it cannot read " +
+            "everything in this file — refusing to report 'nothing to do'.\n\n" +
+            unreadableReport(plan.stuck)
+        )
+        return abort(fails)
+      }
       console.log(`Nothing has aged out for --today ${args.today} — nothing to do.`)
       return 0
     }
+    if (plan.stuck.length)
+      console.warn(
+        `condense-changelog: WARNING — this run is partial.\n\n${unreadableReport(plan.stuck)}\n\n` +
+          `  It splices around those blocks and conserves them (Check K); they never age out.\n`
+      )
     args.keepDetailedSince = plan.keepDetailedSince
     args.dropRangesBefore = plan.dropRangesBefore
     if (plan.shedYear) args.shedYear = plan.shedYear

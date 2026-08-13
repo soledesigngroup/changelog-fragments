@@ -147,9 +147,28 @@ not requested; Tier-4-only and shed runs merely warn, since they never touch Tie
 absolute calendar week (`weekBucket`, epoch-days ÷ 7 — deliberately not anchored to `--today`, so a
 date's bucket never changes between runs). When new days collapse into a week that already has a
 range, that range is *extended* — old body kept, new per-day subject lines appended, heading widened
-— instead of a second range accumulating beside it. Pre-1.1 summary dates whose detail was never
-archived are moved into the archive as-is, marked `_Summary only …_`, because that summary is the
-only text that still exists.
+— instead of a second range accumulating beside it. A bucket holding exactly **one** day is written
+as `### DATE`, not `### D to D`: that heading claimed a span that didn't exist, and `--report`
+counted it under "summary ranges", so a Tier 3 made entirely of single days reported zero summary
+days. It carries Tier-3 content (subject + refs, no links) so a later run reads it straight back out
+when the week gains a day and becomes a real range — but only when no existing range is being
+extended, since merging into one has to keep the range shape or the old heading survives beside the
+new day and Check E refuses the run. Pre-1.1 summary dates whose detail was never archived are moved
+into the archive as-is, marked `_Summary only …_`, because that summary is the only text that still
+exists.
+
+**"Nothing has aged out" is never said about a file the tools can't read.** A heading no regex here
+parses lands in no tier, so it feeds no cutoff — and a changelog made entirely of them (`##
+[2026-07-26]`, the pre-1.0.1 migration shape) classified cleanly into nothing and drew a green
+all-clear from `--plan` while months overdue, with `--check` calling the structure intact beside it.
+That is worse than an error: an agent told there is no work, looking at entries that plainly need it,
+edits the file by hand — which is how one downstream repo lost ~17.5k words. `planTiers` now returns
+`stuck` (an opaque `##` block whose heading *leads* with an ISO date — `STUCK_DAY_RE`) separately
+from `legacyOpaque` (everything else), and both `--plan` and `--auto` name the blocks, print the
+fix, and exit **1** when nothing readable aged out. Leading is the whole test: `## [Unreleased]` and
+`## [1.2.0] - 2026-03-29` are opaque by design and stay quiet, because a warning that fires on every
+migrated Keep-a-Changelog repo forever is a warning nobody reads. When there *is* readable work, the
+run does it and warns that it was partial — gating there would only punish the half-fixable repo.
 
 **Summarization never destroys detail — the script moves it, verbatim.** Every full-detail `## DATE`
 block the splice removes is auto-archived byte-for-byte as a `### DATE` archive entry (Check J: no
@@ -237,15 +256,23 @@ seeded markdown. Changing one means changing it in **all** of them plus the temp
   region's end anchor).
 - `> Earlier years:` — the per-year archive pointer `--shed-year` writes and refreshes in place. It's
   the one line the shed's losslessness check is allowed to supersede.
-- Heading shapes: `## YYYY-MM-DD` (Tier 1 full detail), `### YYYY-MM-DD` (Tier 2 / archive per-day),
-  `### YYYY-MM-DD to YYYY-MM-DD` (Tier 3 week-range). Anything else is invisible to the regexes.
+- Heading shapes: `## YYYY-MM-DD` (Tier 1 full detail), `### YYYY-MM-DD` (Tier 2 / archive per-day,
+  and a Tier-3 week that held a single day), `### YYYY-MM-DD to YYYY-MM-DD` (Tier 3 week-range).
+  Anything else is invisible to the regexes — and, since v1.5.0, *counted* rather than assumed away.
   The `###` pair now lives in **both** payload scripts — condense's `reH3Date`/`reH3Range` write them,
   `collect-changelog.mjs`'s `AGED_DAY_RE`/`AGED_RANGE_RE` read them for `--report`. A shape only one
   side knows is a tier the report silently counts as empty, and days the coverage check then calls
   undocumented.
-  The Tier-1 shape tolerates **trailing text** (`## 2026-07-03 (parenthetical)`) and the fold's
-  `DAY_DATE_RE` and condense's `reH2Day` must agree on that or a legacy day is ordered by one and
-  invisible to the other — classified into no tier, never swept into a splice region, stuck forever.
+  The Tier-1 shape tolerates **trailing text** with or without whitespace before it
+  (`## 2026-07-03 (parenthetical)`, `## 2026-07-03(retro)`), and refuses a following digit
+  (`## 2026-07-263` is not a day). Condense spells that shape **once**, as `H2_DAY_SRC`, and the
+  fold's `DAY_DATE_RE` must accept exactly the same thing. Four hand-spelled copies disagreed about
+  `## 2026-07-20(retro)`, and the split was not cosmetic: `dayBlocksIn` read it as a day and moved
+  its detail to the archive, `legacyBlocksIn`/`parseRegionBlocks` read it as an opaque legacy block
+  and re-emitted it into the changelog, and `reH2Day` saw neither — so the survivor test looked for a
+  date the new file could never report, every check passed, and the same day's detail ended up in
+  both files permanently (the block stays in Tier 1, so nothing ever moves it again). A new reader
+  goes through `matchH2Day`/`reH2Day`, never a fresh literal.
   The `###` shapes stay anchored: relaxing `reH3Date` would make a week-range parse as a single day.
 
 ## Template substitution

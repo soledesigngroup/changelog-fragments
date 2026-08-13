@@ -98,8 +98,17 @@ const HR_RE = /^-{3,}\s*$/
 const DAY_HEADING_RE = /^##\s+/
 /** An `#`/`##`/`###` heading of any shape — used to reject the ones we can't place. */
 const ANY_HEADING_RE = /^#{1,3}\s+\S/
-/** A day heading's leading ISO date, tolerating legacy trailing text. */
-const DAY_DATE_RE = /^##\s+(\d{4}-\d{2}-\d{2})/
+/**
+ * A day heading's leading ISO date, tolerating legacy trailing text with or
+ * without whitespace before it (`## 2026-07-03 (retro)`, `## 2026-07-03(retro)`).
+ *
+ * This has to accept EXACTLY what condense's H2_DAY_SRC accepts. When it accepted
+ * more, `## 2026-07-20(retro)` was a day here and an opaque legacy block there:
+ * condense archived its detail verbatim while also re-emitting the block into the
+ * changelog, and every check passed on the duplicate. A digit may not follow the
+ * date, so `## 2026-07-263` is opaque to both rather than a day to one.
+ */
+const DAY_DATE_RE = /^##[ \t]+(\d{4}-\d{2}-\d{2})(?!\d)/
 /**
  * The aged-entry shapes: Tier-2 per-day and Tier-3 week-range. READ-ONLY here —
  * only condense-changelog.mjs writes them — but `--report` has to census the tiers

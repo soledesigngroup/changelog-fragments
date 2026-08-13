@@ -239,6 +239,14 @@ its tier and prints the exact anchors and cutoffs to pass — including whether 
 shed a year. Working "today minus 42 days" out by hand was the least reliable input to the most
 destructive operation.
 
+**"Nothing has aged out" is never said about a file the tools can't read.** A heading they can't parse
+is in no tier, so it contributes to no cutoff — and a changelog made entirely of them classified
+cleanly into nothing at all and reported an all-clear while months overdue. That green light is worse
+than an error: an agent told there is no work to do, looking at entries that plainly need it, edits
+the file by hand. `--plan` and `--auto` now count what they couldn't read, name the blocks, print the
+fix, and exit non-zero rather than call it a clean bill of health. A run that has real work *and*
+unreadable blocks does the work and says loudly that it was partial.
+
 **Dates are compared as ISO strings.** `YYYY-MM-DD` sorts lexicographically, so there is no timezone
 handling anywhere and no way for a local-midnight bug to move an entry to the wrong day. The single
 exception is the cutoff/week-bucket arithmetic behind `--plan` and `--auto`, which is UTC-only and

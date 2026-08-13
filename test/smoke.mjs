@@ -1178,6 +1178,127 @@ Early July theme summary.
   })
 })
 
+group("condense refuses a false all-clear", () => {
+  // The shape that cost a downstream repo ~17.5k words. A pre-1.0.1 migration
+  // left every day heading as `## [YYYY-MM-DD]`, which no day regex in either
+  // script reads. --plan therefore classified nothing into any tier, printed
+  // "Nothing has aged out yet — no condense run needed today", and exited 0 on a
+  // changelog months overdue. The agent that read that condensed it by hand.
+  //
+  // The tier tables of "nothing aged out" and "nothing I can READ aged out" are
+  // identical; only this distinction separates them.
+  const bracketed = (days) =>
+    [
+      "# Changelog",
+      "",
+      "---",
+      "",
+      ...days.flatMap((d) => [`## [${d}]`, "", "### Added", `- **Entry for ${d}** — detail.`, "", "---", ""]),
+      "## Earlier Changes (Summary)",
+      "",
+      "_Nothing has aged out yet._",
+      "",
+      "> Full per-day details available in [changelog-archive.md](changelog-archive.md)",
+      "",
+    ].join("\n")
+
+  const bracketedRepo = (days) => {
+    const dir = newRepo({ "package.json": '{\n  "name": "opaque"\n}\n' })
+    install(dir)
+    write(dir, "docs/changelog.md", bracketed(days))
+    return dir
+  }
+  const DAYS = ["2026-07-26", "2026-07-20", "2026-06-15"]
+
+  test("every other gate still calls this file healthy", () => {
+    // Why --plan had to be the one to notice: --check reads structure, not
+    // classifiability, and a file can be perfectly structured and unreadable.
+    const r = foldAttempt(bracketedRepo(DAYS), ["--check"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /structure intact/)
+  })
+
+  test("--plan says it is NOT an all-clear, and exits non-zero", () => {
+    const r = condense(bracketedRepo(DAYS), [...CL_AR, "--plan", "--today", "2026-08-13"])
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /NOT an all-clear/, r.out)
+    assert.doesNotMatch(r.out, /Nothing has aged out yet/, "the exact sentence that misled")
+  })
+
+  test("--plan names every unreadable block and the fix", () => {
+    const r = condense(bracketedRepo(DAYS), [...CL_AR, "--plan", "--today", "2026-08-13"])
+    assert.match(r.out, /UNREADABLE — in no tier, cannot age out\s*: 3 block\(s\)/, r.out)
+    for (const d of DAYS) assert.ok(r.out.includes(`## [${d}]`), `names ${d}: ${r.out}`)
+    assert.match(r.out, /A day heading must be '## YYYY-MM-DD'/)
+  })
+
+  test("more than eight are summarized, never silently truncated", () => {
+    const many = ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05",
+      "2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10"]
+    const r = condense(bracketedRepo(many), [...CL_AR, "--plan", "--today", "2026-08-13"])
+    assert.match(r.out, /10 '##' block\(s\) lead with a date/, r.out)
+    assert.match(r.out, /… and 2 more/, r.out)
+  })
+
+  test("--auto refuses instead of reporting 'nothing to do'", () => {
+    const repo = bracketedRepo(DAYS)
+    const before = read(repo, "docs/changelog.md")
+    const r = condense(repo, ["--auto", "--today", "2026-08-13"])
+    assert.equal(r.status, 1, r.out)
+    assert.match(r.out, /unreadable changelog/, r.out)
+    assert.doesNotMatch(r.out, /nothing to do\./)
+    assert.equal(read(repo, "docs/changelog.md"), before, "nothing written")
+  })
+
+  test("a genuine 'nothing has aged out' is still an all-clear", () => {
+    const fresh = newRepo()
+    install(fresh, ["--name", "Fresh"])
+    const r = condense(fresh, [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Nothing has aged out yet/)
+  })
+
+  test("a Keep-a-Changelog legacy zone is not mistaken for one", () => {
+    // `## [Unreleased]` and `## [1.2.0] - 2026-03-29` are opaque BY DESIGN — the
+    // migrator preserves them and they sink under newer days. Firing on those
+    // would put a false alarm on every migrated repo forever, which is how a
+    // warning stops being read.
+    const repo = newRepo({ "docs/changelog.md": KEEP_A_CHANGELOG })
+    install(repo)
+    const r = condense(repo, [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Nothing has aged out yet/, r.out)
+    assert.doesNotMatch(r.out, /UNREADABLE/, r.out)
+    assert.match(r.out, /legacy, no date — kept as is, never condensed\s*: 3 block\(s\)/, r.out)
+  })
+
+  test("unreadable blocks beside real work warn, and the work still runs", () => {
+    // Gating this would only punish the repo that is half fixable: the readable
+    // entries genuinely have aged out, and the splice conserves the rest (Check K).
+    const repo = bracketedRepo(DAYS)
+    write(
+      repo,
+      "docs/changelog.md",
+      bracketed(DAYS).replace(
+        "## Earlier Changes",
+        "## 2026-07-30\n\n### Fixed\n- **Readable and overdue** — q.\n\n---\n\n## Earlier Changes"
+      )
+    )
+    const plan = condense(repo, [...CL_AR, "--plan", "--today", "2026-08-13"])
+    assert.equal(plan.status, 0, "a partial plan is still actionable")
+    assert.match(plan.out, /WARNING — the plan below is partial/, plan.out)
+    assert.match(plan.out, /--cl-start '## 2026-07-30'/, plan.out)
+
+    const run = condense(repo, ["--auto", "--today", "2026-08-13"])
+    assert.equal(run.status, 0, run.out)
+    assert.match(run.out, /WARNING — this run is partial/, run.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.match(cl, /^### 2026-07-30$/m, "the readable day condensed")
+    for (const d of DAYS) assert.ok(cl.includes(`## [${d}]`), `${d} conserved verbatim`)
+    assert.ok(read(repo, "docs/changelog-archive.md").includes("- **Readable and overdue** — q."))
+  })
+})
+
 group("condense sees the same day headings the fold does", () => {
   /** MIDLIFE_CL with legacy trailing text on the topmost condensing day. */
   const legacyRepo = (heading = "## 2026-07-20 (DocuSeal implementation plan)") => {
@@ -1286,6 +1407,50 @@ Early July theme summary.
     assert.equal(ar.split("\n").filter((l) => l === "### 2026-07-20").length, 1, ar)
     assert.ok(ar.includes("_(provider decision)_") && ar.includes("_(retro)_"))
     assert.ok(ar.includes("- **Same day, twice** — q.") && ar.includes("- **Six days ago** — z."))
+  })
+
+  test("trailing text with no space before it is the same day to both scripts", () => {
+    // `## 2026-07-20(retro)`: a day to the fold's DAY_DATE_RE, opaque to
+    // condense's reH2Day. Not a cosmetic split — see the duplication test below.
+    const r = condense(legacyRepo("## 2026-07-20(retro)"), [
+      ...CL_AR, "--plan", "--today", "2026-07-26",
+    ])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /Tier 2 .*\(>= 2026-07-12\): 2026-07-20, 2026-07-18/, r.out)
+    assert.doesNotMatch(r.out, /UNREADABLE/, "readable, not merely reported")
+  })
+
+  test("a heading only one reader called a day was silently written into both files", () => {
+    // dayBlocksIn read `## 2026-07-20(retro)` as a day and moved its detail to the
+    // archive; parseRegionBlocks read it as an opaque legacy block and re-emitted
+    // it into the changelog; reH2Day saw neither, so the survivor test looked for a
+    // date the new file could never report. Every check passed on the duplicate —
+    // and because the block stayed in Tier 1, nothing would ever move it again.
+    const repo = legacyRepo("## 2026-07-20(retro)")
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    const ar = read(repo, "docs/changelog-archive.md")
+    assert.equal(
+      cl.split("- **Six days ago** — z.").length - 1 + (ar.split("- **Six days ago** — z.").length - 1),
+      1,
+      `detail exists exactly once across both files:\n${cl}\n---\n${ar}`
+    )
+    assert.ok(!cl.includes("(retro)"), "the block left Tier 1 instead of being re-emitted")
+    assert.match(cl, /^### 2026-07-20$/m, "and aged out to a canonical Tier-2 entry")
+    assert.ok(ar.includes("_(retro)_"), "trailing text preserved as an archive note")
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("a digit after the date is opaque to both, not a day to one", () => {
+    // `## 2026-07-263` is not 2026-07-26 with a stray 3. The readers have to agree
+    // even on the shapes they both refuse — the fold used to date it 2026-07-26,
+    // which put a second 2026-07-26 in a file that already had one.
+    const repo = legacyRepo("## 2026-07-263")
+    const check = foldAttempt(repo, ["--check"])
+    assert.equal(check.status, 0, check.out)
+    const plan = condense(repo, [...CL_AR, "--plan", "--today", "2026-07-26"])
+    assert.match(plan.out, /Tier 2 .*\(>= 2026-07-12\): 2026-07-18/, plan.out)
   })
 
   test("Check C still catches an old-flow summary collapsed without being archived", () => {
@@ -1938,6 +2103,105 @@ group("condense --auto", () => {
     assert.ok(cl.includes("- 2026-07-18 — **Range start**"))
     assert.ok(cl.includes("- 2026-07-20 — **Late member**"))
     assert.ok(read(repo, "docs/changelog-archive.md").includes("- **Late member** — of the same week."))
+  })
+
+  test("a week holding one day is written as that day, not a range to itself", () => {
+    // `### D to D` was valid to every regex and wrong to every reader: it claims a
+    // span that doesn't exist, and --report filed it under "summary ranges", so a
+    // Tier 3 made entirely of single days reported zero summary days.
+    const repo = newRepo({ "package.json": '{\n  "name": "lone"\n}\n' })
+    install(repo)
+    write(
+      repo,
+      "docs/changelog.md",
+      [
+        "# Changelog", "", "---", "",
+        "## 2026-07-26", "", "### Added", "- **Fresh** — kept.", "", "---", "",
+        // 2026-06-30 and 2026-06-17 are alone in their absolute week buckets.
+        "## 2026-06-30", "", "### Changed",
+        "- **Lone day** — z. [`a.js`](../src/a.js) (#12)", "", "---", "",
+        "## 2026-06-17", "", "### Fixed", "- **Another lone week** — w.", "", "---", "",
+        "## Earlier Changes (Summary)", "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)", "",
+      ].join("\n")
+    )
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.match(cl, /^### 2026-06-30$/m, cl)
+    assert.match(cl, /^### 2026-06-17$/m, cl)
+    assert.doesNotMatch(cl, /to 2026-06-30$/m, "no range from a day to itself")
+    // Tier-3 content: subject + refs, no link — the link lives on in the archive.
+    assert.ok(cl.includes("### 2026-06-30\n- **Lone day** (#12)"), cl)
+    assert.ok(!cl.includes("### 2026-06-30\n- 2026-06-30 —"), "no date restated inside its own day")
+    assert.ok(read(repo, "docs/changelog-archive.md").includes("[`a.js`](../src/a.js)"))
+
+    const report = run("node", ["scripts/collect-changelog.mjs", "--report"], repo)
+    assert.match(report, /summary days\s+2/, report)
+    assert.match(report, /summary ranges\s+0/, report)
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+
+  test("a later day in that week widens it into a real range", () => {
+    // The single-day entry has to read back out as Tier-3 content when its week
+    // stops being a single day — otherwise the shape is a one-way door.
+    const repo = newRepo({ "package.json": '{\n  "name": "widen"\n}\n' })
+    install(repo)
+    write(
+      repo,
+      "docs/changelog.md",
+      [
+        "# Changelog", "", "---", "",
+        "## 2026-07-26", "", "### Added", "- **Fresh** — kept.", "", "---", "",
+        // Same absolute week bucket as the 2026-06-30 entry below.
+        "## 2026-06-29", "", "### Added", "- **Late fragment** — same week.", "", "---", "",
+        "## Earlier Changes (Summary)", "",
+        "### 2026-06-30", "- **Lone day** (#12)", "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)", "",
+      ].join("\n")
+    )
+    write(repo, "docs/changelog-archive.md", MIDLIFE_AR.replace("### 2026-06-07", "### 2026-06-30\n- **Lone day** — archived earlier.\n\n### 2026-06-07"))
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.match(cl, /^### 2026-06-29 to 2026-06-30$/m, cl)
+    assert.doesNotMatch(cl, /^### 2026-06-30$/m, "the single-day entry became the range")
+    assert.ok(cl.includes("- 2026-06-30 — **Lone day** (#12)"), cl)
+    assert.ok(cl.includes("- 2026-06-29 — **Late fragment**"), cl)
+  })
+
+  test("a single-day entry ages past Tier 3 through the splice, not the drop", () => {
+    // Tier 4 drops week-ranges only and Check H refuses a per-day heading in the
+    // drop region, so a `### D` entry has to leave via the splice once it passes
+    // the Tier-4 cutoff — or the shape would deadlock every later run.
+    const repo = newRepo({ "package.json": '{\n  "name": "agedout"\n}\n' })
+    install(repo)
+    write(
+      repo,
+      "docs/changelog.md",
+      [
+        "# Changelog", "", "---", "",
+        "## 2026-08-20", "", "### Added", "- **Fresh** — kept.", "", "---", "",
+        "## Earlier Changes (Summary)", "",
+        "### 2026-06-17", "- **Long past Tier 3** (#7)", "",
+        "### 2026-06-08 to 2026-06-10", "- 2026-06-10 — **Older**", "- 2026-06-08 — **Oldest**", "",
+        "> Full per-day details available in [changelog-archive.md](changelog-archive.md)", "",
+      ].join("\n")
+    )
+    write(
+      repo,
+      "docs/changelog-archive.md",
+      MIDLIFE_AR.replace(
+        "### 2026-06-07",
+        "### 2026-06-17\n- d.\n\n### 2026-06-10\n- d.\n\n### 2026-06-08\n- d.\n\n### 2026-06-07"
+      )
+    )
+    const r = condense(repo, ["--auto", "--today", "2026-08-20"])
+    assert.equal(r.status, 0, r.out)
+    const cl = read(repo, "docs/changelog.md")
+    assert.doesNotMatch(cl, /^### 2026-06-17$/m, "left via the splice — its detail is archived")
+    assert.doesNotMatch(cl, /^### 2026-06-08 to 2026-06-10$/m, "range dropped by Tier 4")
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
   })
 
   test("--auto --dry-run writes nothing", () => {

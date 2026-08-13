@@ -12,7 +12,7 @@ computed from **today's date**:
 |---|---|---|
 | 1 | 0–3 days | `## YYYY-MM-DD` full detail — **never modified** |
 | 2 | 4–14 days | `### YYYY-MM-DD` per-day summary under `## Earlier Changes (Summary)` |
-| 3 | 15–42 days | `### YYYY-MM-DD to YYYY-MM-DD` week-range |
+| 3 | 15–42 days | `### YYYY-MM-DD to YYYY-MM-DD` week-range (a week holding one day stays `### YYYY-MM-DD`) |
 | 4 | older | dropped from `changelog.md` entirely |
 
 Nothing is ever lost: the moment a day leaves Tier 1, `scripts/condense-changelog.mjs` moves its
@@ -45,6 +45,22 @@ clock is never read.
 
 Prefer this path. Hand-written summaries buy slightly nicer prose in exchange for temp files and a
 multi-step flow; the archive holds the full text either way.
+
+## If it says the changelog is unreadable
+
+`--plan` and `--auto` exit **non-zero** when the file holds `##` blocks whose date they can't parse
+(`## [2026-07-26]` and the like) and nothing they *can* read has aged out. They print each heading
+and the shape they need.
+
+**Fix the headings; do not condense by hand.** Rewrite each one as `## YYYY-MM-DD` — trailing text
+after the date is fine (`## 2026-07-26 (retro)`) — and leave every body line byte-for-byte, then
+re-run. Summarizing those entries yourself is the failure this refusal exists to prevent: the
+archive is populated by the script, so detail rewritten in an editor is detail gone, and the run
+that would have moved it verbatim never happens.
+
+A run that reports the warning but still exits 0 has done the work it could and spliced around the
+rest — the unreadable blocks are conserved (Check K), and they stay stuck until their headings are
+fixed.
 
 ## Manual path — model-written summaries
 
