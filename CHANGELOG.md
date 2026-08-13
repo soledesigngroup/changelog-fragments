@@ -12,11 +12,45 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.4.0`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.4.1`.
 
 ---
 
-## [1.4.0] — 2026-08-12
+## [1.4.1] — 2026-08-13
+
+**Upgrade: recommended — re-run `install.mjs`. Safe on an existing installation**; no shared anchor,
+category, or filename convention changed. One behavior change to know about: a `--drop-ranges-before`
+run that passed before can now **refuse**, and that refusal is the fix — it means the drop was about
+to destroy the last copy of a day. Nothing that was safe becomes unsafe; some things that looked safe
+stop claiming to be.
+
+### Fixed
+
+- **Check H now verifies Tier-4 coverage day by day, not span by span.** A `--auto` week-range names
+  the days it summarizes (`- YYYY-MM-DD — …`); the check now requires **each** of those days to have
+  its own archive entry before the range paragraph is deleted. The old test asked only whether the
+  range's span overlapped *some* archive heading, so a range whose days were only **partly** archived
+  was waved through and the drop took the unarchived days' last trace with it.
+
+  That partial shape is not hypothetical — it is precisely what a repo upgrading from **pre-1.1**
+  looks like. Days condensed under the old flow (which discarded detail rather than archiving it
+  verbatim) have no archive entry; days condensed since have one; a single calendar week can hold
+  both. The overlap found the archived day and reported the whole week covered.
+
+  A hand-written range names no days, so there is nothing to enumerate and the span test still
+  applies — but the run now **prints** which ranges rode on it rather than letting a weakened test
+  pass unsaid.
+
+- **`--report` no longer counts a nested sub-bullet as its own entry.** `countBullets` matched any
+  line whose *trimmed* text began `- `, so an indented sub-item — detail belonging to the bullet
+  above it — was tallied as a separate entry. Every other reader of these files (the fold's
+  `extractFragmentBlocks`, condense's `bulletsOf`) treats a bullet as starting at column 0, and now
+  the report does too. The skew was confined to the dashboard, but it was large and one-sided: an
+  installed repo that nests lists reported **133** Tier-1 bullets against 81 real entries, while the
+  pending-fragment counts printed directly above stayed correct, because fragments rarely nest.
+
+- **Check N is listed in the script's own verification docblock**, and the README's check count is
+  corrected from thirteen to fourteen. `N` shipped in v1.3.1 but was never added to either list.
 
 **Upgrade: recommended — re-run `install.mjs`. Safe on an existing installation**; no shared anchor,
 category, or filename convention changed, and every existing flag behaves identically. This is the

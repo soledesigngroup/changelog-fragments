@@ -18,7 +18,7 @@ computed from **today's date**:
 Nothing is ever lost: the moment a day leaves Tier 1, `scripts/condense-changelog.mjs` moves its
 full-detail block into `docs/changelog-archive.md` **byte-for-byte**. Every summary tier is an
 index over that archive, never the only copy, and dropping a Tier-4 range is lossless dedup — the
-script refuses (Check H) when the archive doesn't already cover it.
+script refuses (Check H) unless **every day the range names** already has its own archive entry.
 
 ## Step 0 — fold pending fragments
 
@@ -72,7 +72,8 @@ marked as summary-only.
 - **Never modify the 0–3 day window** (Check D), and never hand-edit any changelog file — the
   splice-and-verify run is the only writer of the summary tiers and the archive.
 - **Never re-type detail.** Summaries are an index; the verbatim copy is moved to the archive by
-  the script (Checks C and J), and Tier 4 only ever drops week-ranges the archive covers (Check H).
+  the script (Checks C and J), and Tier 4 only ever drops a week-range whose every named day is
+  archived (Check H).
 - **The archive stays newest-first**, and once it passes ~2,000 lines its oldest completed year is
   shed into a static per-year file — by the script (Check I), never by hand.
 - Keep this footer at the bottom of `changelog.md` (Check G):

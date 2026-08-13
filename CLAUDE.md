@@ -161,6 +161,17 @@ would have silently deleted the whole legacy history, since the model was never 
 were inside the region. `--ar-content` is transition-only now: `--plan` requests it solely for
 summary-section dates collapsing whose detail was never archived (pre-1.1 condense flows).
 
+**A Tier-4 drop is checked day by day, not span by span.** A `--auto` week-range names the days it
+summarizes (`- YYYY-MM-DD — …`), so Check H requires *each* of those days to have its own archive
+entry before `dropOldRanges` deletes the paragraph. Testing the span for any overlapping archive
+heading — what it did through v1.4.0 — passes a range whose days are only **partly** archived, which
+is exactly the shape of a repo upgrading from pre-1.1: days condensed under the old detail-discarding
+flow have no archive entry, days condensed since have a verbatim one, and one calendar week holds
+both. The overlap found the archived day and the drop took the others' last trace with it. A
+hand-written range names no days, so there is nothing to enumerate and the span test still stands —
+but the run *prints* which ranges rode on it, because a coverage test that quietly weakened itself is
+the failure mode this whole check exists to prevent.
+
 **The archive stays in descending date order, and entries are placed one by one.** `insertIntoArchive`
 positions each entry against the existing headings rather than dropping the batch above the newest
 one. The verbatim auto-archive always supplies dates newer than everything archived, so a batch insert

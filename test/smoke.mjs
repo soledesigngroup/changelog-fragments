@@ -788,6 +788,24 @@ group("fold --report", () => {
       ])
       .join("\n")
 
+  test("a nested sub-bullet counts toward its parent entry, not as its own", () => {
+    // An indented `- ` is detail inside the bullet above it. Counting it as an
+    // entry inflates Tier 1 against the fragment counts printed beside it.
+    const nested = newRepo({ "package.json": '{\n  "name": "nested"\n}\n' })
+    install(nested)
+    write(
+      nested,
+      "docs/changelog.md",
+      changelogFor(["2026-07-20"]).replace(
+        "- **Day 2026-07-20** — x.",
+        "- **Day 2026-07-20** — x.\n  - sub-item one\n  - sub-item two"
+      )
+    )
+    const r = report(nested)
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /bullets\s+1\s+Added 1/, r.out)
+  })
+
   test("censuses every tier of a mid-life changelog", () => {
     const r = report(repo)
     assert.equal(r.status, 0, r.out)
@@ -1576,6 +1594,41 @@ group("condense verification checks", () => {
       condense(repo, [...CL_AR, "--drop-ranges-before", "2026-06-14"]),
       "H"
     )
+  })
+
+  test("H: a range whose named days are only partly archived aborts", () => {
+    // The pre-1.1 upgrade shape: one calendar week holds days condensed under the
+    // old detail-discarding flow (no archive entry) beside days condensed since
+    // (archived verbatim). A span-overlap test finds the archived one and drops
+    // the range — taking the others' last trace with it.
+    const repo = midlifeRepo()
+    write(
+      repo,
+      "docs/changelog.md",
+      MIDLIFE_CL.replace(
+        "### 2026-06-01 to 2026-06-07\nTheme summary for early June.",
+        "### 2026-06-01 to 2026-06-07\n- 2026-06-07 — **June seven**\n" +
+          "- 2026-06-04 — **June four**\n- 2026-06-01 — **June one**"
+      )
+    )
+    // MIDLIFE_AR archives 06-07 and 06-01 but never 06-04.
+    const r = condense(repo, [...CL_AR, "--drop-ranges-before", "2026-06-14"])
+    assertCheckFails(r, "H")
+    // Only the unarchived day is named — 06-07 and 06-01 are covered.
+    assert.match(
+      r.out,
+      /names 1 day\(s\) with no archive entry - their detail would be lost: 2026-06-04/,
+      r.out
+    )
+  })
+
+  test("H: a hand-written range naming no days still rides on span overlap", () => {
+    // Nothing to enumerate, so the older span test stands — and says so.
+    const repo = midlifeRepo()
+    const r = condense(repo, [...CL_AR, "--drop-ranges-before", "2026-06-14"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /name no days; coverage was checked against the span only/, r.out)
+    assert.match(r.out, /2026-06-01 to 2026-06-07/, r.out)
   })
 
   test("H: a per-day heading inside the Tier-4 drop region aborts", () => {

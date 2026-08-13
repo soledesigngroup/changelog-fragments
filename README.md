@@ -225,12 +225,13 @@ week (extending a partial week's range instead of duplicating it), and the same 
 runs. The manual flow still exists for model-written prose, but even there the model supplies *only
 the new summary text*: the script re-opens the summary section, re-emits unchanged and legacy entries
 the splice region swallows, and sorts everything newest-first itself — an entry accidentally left out
-of the temp file is re-emitted, not silently lost. Thirteen structural checks guard every run
+of the temp file is re-emitted, not silently lost. Fourteen structural checks guard every run
 (anchors unambiguous and ordered, no duplicate headings, nothing collapsed without being archived,
 the 0–3 day window untouched, no per-day heading covered by a week-range, separator and footer
-preserved, Tier-4 drops only fully-archived week-ranges, a year shed that conserves every heading and
-line, a verbatim auto-archive that conserves every line, legacy no-date blocks surviving any splice,
-no splice while fragments are pending, and temp-file content that parses into placeable blocks).
+preserved, a Tier-4 drop only of week-ranges whose every named day is archived, a year shed that
+conserves every heading and line, a verbatim auto-archive that conserves every line, legacy no-date
+blocks surviving any splice, no splice while fragments are pending, temp-file content that parses
+into placeable blocks, and an archive still in descending date order).
 **It writes nothing unless every check passes.**
 
 **The model isn't asked to do date arithmetic.** `--plan --today <DATE>` classifies every heading into

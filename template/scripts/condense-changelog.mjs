@@ -123,8 +123,9 @@
  *   F. The "---" separator before "## Earlier Changes (Summary)" is preserved.
  *   G. The footer pointer to the archive is preserved.
  *   H. (if --drop-ranges-before) the Tier-4 drop region holds only week-ranges
- *      (no single-day heading, no kept range below a dropped one), and every
- *      dropped range overlaps some archive heading, so its detail survives.
+ *      (no single-day heading, no kept range below a dropped one), and every day
+ *      a dropped range names has its own archive entry, so its detail survives.
+ *      A range naming no days falls back to a span-overlap test, reported.
  *   I. (if --shed-year) the year being shed is the oldest present and not the only
  *      one, its target file doesn't already exist, and the partition conserves
  *      every archive heading and every non-blank line exactly once.
@@ -138,6 +139,10 @@
  *      and shed runs warn instead (they never touch Tier 1).
  *   M. --cl-mid (and the region itself) must parse into placeable blocks; content
  *      sitting under no heading is refused rather than guessed at or dropped.
+ *   N. An archive that was in descending date order still is after this run — a
+ *      regression check, so an archive that arrived scrambled is left alone
+ *      rather than re-sorted (re-sorting a file this system didn't scramble is
+ *      editing history).
  *
  * Self-contained: no imports beyond node builtins, no build step, no deps.
  * Dates are compared as ISO strings (YYYY-MM-DD sorts lexicographically), so
@@ -521,8 +526,9 @@ function appendBelowLastEntry(arText, text) {
 /**
  * Tier 4: remove trailing week-range blocks whose END date < cutoff.
  *
- * Returns [newText, dropped] where `dropped` is the list of [start, end] date
- * pairs removed. Appends to `fails` on any structural surprise (the caller
+ * Returns [newText, dropped] where `dropped` is the list of removed ranges as
+ * {from, to, body} — the body is what Check H reads to learn which days the
+ * range summarizes. Appends to `fails` on any structural surprise (the caller
  * aborts if `fails` is non-empty). Removal is a single splice from the topmost
  * droppable range through the footer, so the last KEPT block, the blank line
  * before the footer, and the footer are all preserved verbatim.
@@ -533,6 +539,8 @@ function dropOldRanges(text, cutoff, fails) {
     return [text, []]
   }
   const foot = text.indexOf(FOOTER)
+  // A range's body runs to the next heading of any level, or to the footer.
+  const heads = [...text.matchAll(reAnyHeading())].map((m) => m.index).filter((i) => i < foot)
 
   let dropStart = null
   const dropped = []
@@ -540,7 +548,8 @@ function dropOldRanges(text, cutoff, fails) {
     if (m.index >= foot) continue
     if (m[2] < cutoff) {
       if (dropStart === null) dropStart = m.index
-      dropped.push([m[1], m[2]])
+      const end = heads.find((i) => i > m.index) ?? foot
+      dropped.push({ from: m[1], to: m[2], body: text.slice(m.index + m[0].length, end) })
     }
   }
 
@@ -1171,17 +1180,55 @@ function shedYearFromArchive(arText, year, archivePath, fails) {
   return { archive, yearText, yearPath, moved: [...new Set(headings.map(keyOf).filter((k) => k.slice(0, 4) === year))] }
 }
 
-/** Return the dropped ranges whose span overlaps NO archive heading. */
-function uncoveredByArchive(dropped, arText) {
+/**
+ * The days a week-range body names — the `- YYYY-MM-DD — …` lines `--auto`
+ * writes, one per day the range summarizes.
+ */
+function daysNamedInRange(body) {
+  return uniqSorted(
+    [...body.matchAll(/^[ \t]*-[ \t]+(\d{4}-\d{2}-\d{2})(?=[ \t]|$)/gm)].map((m) => m[1])
+  )
+}
+
+/**
+ * Check H's archive-coverage test for the ranges Tier 4 is about to delete.
+ *
+ * A range built by `--auto` names the days it summarizes, so coverage is
+ * checkable day by day: each of those days must have its own archive entry,
+ * because once the range paragraph goes the archive is the only copy left.
+ * Testing the span for *any* overlapping archive heading — what this did before
+ * v1.4.1 — waves through a range whose days are only PARTLY archived, which is
+ * exactly the shape a repo upgrading from pre-1.1 has: days condensed under the
+ * old flow got no archive entry, days condensed since got a verbatim one, and
+ * one calendar week can hold both. The overlap then found the archived day and
+ * the drop silently took the others' last trace with it.
+ *
+ * A hand-written range names no days and there is nothing to enumerate, so it
+ * falls back to that span test — reported in `loose` rather than waved through
+ * quietly. Returns {missing, loose}.
+ */
+function archiveCoverage(dropped, arText) {
   const arSingles = [...singleDates(arText)]
   const arRanges = rangesOf(arText)
+  const archived = (d) => arSingles.includes(d) || arRanges.some(([a, b]) => a <= d && d <= b)
+
   const missing = []
-  for (const [x, y] of dropped) {
-    const covered =
-      arSingles.some((s) => x <= s && s <= y) || arRanges.some(([a, b]) => a <= y && b >= x)
-    if (!covered) missing.push([x, y])
+  const loose = []
+  for (const { from, to, body } of dropped) {
+    const days = daysNamedInRange(body)
+    if (days.length) {
+      const gaps = days.filter((d) => !archived(d))
+      if (gaps.length) missing.push({ from, to, days: gaps })
+    } else if (
+      !arSingles.some((s) => from <= s && s <= to) &&
+      !arRanges.some(([a, b]) => a <= to && b >= from)
+    ) {
+      missing.push({ from, to, days: null })
+    } else {
+      loose.push({ from, to })
+    }
   }
-  return missing
+  return { missing, loose }
 }
 
 function parseArgs(argv) {
@@ -1488,11 +1535,19 @@ function main() {
 
   // --- Tier 4 drop (optional) ---
   let dropped = []
+  let looselyCovered = []
   if (args.dropRangesBefore) {
     ;[newCl, dropped] = dropOldRanges(newCl, args.dropRangesBefore, fails)
     if (fails.length) return abort(fails)
-    for (const [x, y] of uncoveredByArchive(dropped, archiveAll))
-      fails.push(`H: dropped range '${x} to ${y}' overlaps no archive heading - its detail would be lost`)
+    const { missing, loose } = archiveCoverage(dropped, archiveAll)
+    looselyCovered = loose
+    for (const { from, to, days } of missing)
+      fails.push(
+        days
+          ? `H: dropped range '${from} to ${to}' names ${days.length} day(s) with no archive ` +
+            `entry - their detail would be lost: ${days.join(", ")}`
+          : `H: dropped range '${from} to ${to}' overlaps no archive heading - its detail would be lost`
+      )
   }
 
   // --- Check B (no duplicate headings within a file) ---
@@ -1607,7 +1662,15 @@ function main() {
   if (dropped.length) {
     console.log(
       `  Tier-4 dropped ${dropped.length} week-range(s): ` +
-        dropped.map(([x, y]) => `${x} to ${y}`).join(", ")
+        dropped.map(({ from, to }) => `${from} to ${to}`).join(", ")
+    )
+  }
+  if (looselyCovered.length) {
+    // Not a failure — but the day-by-day coverage test couldn't run on these, so
+    // say which ones rode on a span overlap instead of letting it pass unsaid.
+    console.log(
+      `  note: ${looselyCovered.length} dropped range(s) name no days; coverage was checked ` +
+        `against the span only: ${looselyCovered.map(({ from, to }) => `${from} to ${to}`).join(", ")}`
     )
   }
   if (shed) {

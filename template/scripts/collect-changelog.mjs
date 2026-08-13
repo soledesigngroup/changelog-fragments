@@ -450,8 +450,17 @@ export function auditChangelog(changelogMd) {
   return problems
 }
 
-/** Bullet lines in a run of markdown — one notion of "a bullet" for the whole file. */
-const countBullets = (lines) => lines.filter((l) => l.trim().startsWith("- ")).length
+/**
+ * Bullet lines in a run of markdown — one notion of "a bullet" for the whole file,
+ * and the same one `extractFragmentBlocks` and condense's `bulletsOf` use: a bullet
+ * starts at **column 0**. An indented `- ` is a sub-item inside the bullet above it,
+ * not an entry of its own. Counting those too (`l.trim().startsWith`) inflated every
+ * Tier-1 figure `--report` printed on any changelog that nests lists — 133 against 81
+ * real entries in one installed repo — while the fragment counts beside them, which
+ * rarely nest, stayed right. A dashboard that overstates one zone and not another is
+ * worse than one that overstates both.
+ */
+const countBullets = (lines) => lines.filter((l) => /^- /.test(l)).length
 
 /** The `### DATE` / `### DATE to DATE` entries in a run of lines. */
 function agedEntries(lines) {
@@ -506,7 +515,7 @@ export function summarizeChangelog(md) {
       if (!day.categories.has(cat)) day.categories.set(cat, 0)
       continue
     }
-    if (!line.trim().startsWith("- ")) continue
+    if (!/^- /.test(line)) continue
     day.bullets++
     if (section) day.categories.set(section, day.categories.get(section) + 1)
   }
