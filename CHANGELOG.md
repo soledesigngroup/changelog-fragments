@@ -12,7 +12,84 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.4.1`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.5.0`.
+
+---
+
+## [1.5.0] — 2026-08-13
+
+**Upgrade: recommended — re-run `install.mjs`. Safe on an existing installation**; no shared anchor,
+category, or filename convention changed, and the shape the fold *writes* is untouched.
+
+Two behavior changes to know about, both of the same kind as v1.4.1's: nothing that was safe becomes
+unsafe, but things that looked fine stop claiming to be.
+
+- **`--check` can newly fail** on a changelog whose day headings are `## [YYYY-MM-DD]`. Those blocks
+  were invisible to its ordering and duplicate-category rules; now they are audited like any other
+  day. A file that starts failing was already broken — it just had no way to say so. Re-run
+  `--check` before wiring this version into CI. (No repo we scanned has such a heading.)
+- **`--plan` and `--auto` can exit non-zero** where they exited 0, when the file holds day headings
+  they can't parse and nothing they can read has aged out. That exit is the fix; see below.
+
+### Added
+
+- **`--plan` and `--auto` refuse to report a false all-clear.** A heading no regex parses lands in no
+  tier, so it feeds no cutoff — which meant a changelog whose every day was written in an unreadable
+  shape classified cleanly into *nothing* and drew `Nothing has aged out yet — no condense run needed
+  today`, exit 0, while months overdue. `--check` called the structure intact beside it.
+
+  That green light is worse than an error. An agent told there is no work, looking at entries that
+  plainly need it, edits the file by hand — and the archive is populated by the script, so detail
+  rewritten in an editor is detail gone. It is how one repo lost roughly 17,500 words.
+
+  `planTiers` now counts what it couldn't classify: `stuck` (a `##` block whose heading *leads* with
+  an ISO date in a wrapper the parser doesn't read) apart from `legacyOpaque` (everything else). Both
+  modes name every such block, print the heading shape they need, and **exit 1** rather than answer a
+  question they never parsed the file to answer. A run that has real work *and* unreadable blocks does
+  the work and says loudly that it was partial — gating there would only punish the half-fixable repo.
+
+  Leading is the whole test, so the legacy zone stays quiet: `## [Unreleased]` and
+  `## [1.2.0] - 2026-03-29` are opaque by design, and a warning that fires on every migrated
+  Keep-a-Changelog repo forever is a warning nobody reads.
+
+### Fixed
+
+- **`## [YYYY-MM-DD]` is a day.** A pre-1.0.1 migrator borrowed Keep a Changelog's bracket convention
+  for the *date* rather than the version and wrote whole histories that way. Those blocks sat outside
+  every tier and could never age out. `H2_DAY_SRC` and the fold's `DAY_DATE_RE` now accept the form —
+  together, as they must. `## [1.2.0] - 2026-03-29` stays opaque: what follows `[` has to *be* the
+  date, so the brackets are not the signal.
+
+  Brackets only, deliberately. `## (2026-07-26)` and `## **2026-07-26**` stay unreadable and get
+  *reported* by the refusal above. Teaching the parser every delimiter someone might type is how a
+  parser starts inventing days; brackets earned their place by being a real migrator's output across
+  whole histories, not by being imaginable.
+
+  Three silent failures rode on that shape: `--check` skipped those blocks in its ordering and
+  duplicate-category rules; the fold's insert scan stops at the first heading it can't date, so a late
+  fragment landed *above* history newer than it, with the ordering check equally blind to the result;
+  and `--report` counted the blocks but not their dates, so its git coverage check reported a day with
+  a full detail block in the file as **undocumented**. That section is the only place under-capture is
+  visible at all, which makes a false positive there the expensive kind.
+
+- **One day-heading shape, spelled once.** `## 2026-07-20(retro)` — trailing text with no space before
+  it — was a day to the fold and to `dayBlocksIn`, an opaque legacy block to `legacyBlocksIn` and
+  `parseRegionBlocks`, and nothing at all to `reH2Day`. So the "did it survive the splice?" test looked
+  for a date the new file could never report, and **every check passed on a run that archived the day's
+  detail verbatim *and* re-emitted the block into the changelog**: the same text in both files,
+  permanently, because a Tier-1 block nothing can classify never moves again.
+
+  All five readers now go through `H2_DAY_SRC`. A digit may no longer follow the date, so
+  `## 2026-07-263` is opaque to both scripts rather than 2026-07-26 to one of them.
+
+- **A Tier-3 week holding one day is written as that day.** `--auto` emitted `### D to D`, valid to
+  every regex and wrong to every reader: it claims a span that doesn't exist, and `--report` filed it
+  under "summary ranges", so a Tier 3 made entirely of single days reported zero summary days. The
+  entry carries Tier-3 content (subject and issue refs, links left to the archive), so a later run
+  reads it straight back out when the week gains a day and becomes a real range. Only when no existing
+  range is being extended — merging has to keep the range shape, or the old heading survives beside the
+  new day and Check E refuses the run. Existing `### D to D` entries are left alone to age out on their
+  own; re-sorting a file this system didn't scramble is editing history.
 
 ---
 
