@@ -130,8 +130,9 @@ link + issue refs — exactly the keys the fragment lint enforces), so a condens
 all; the manual `--cl-mid` flow remains for hand-written prose. When the checks do pass, the writes
 land **receiving file first** — year file, then archive, then changelog, each via temp + rename —
 because detail flows changelog→archive→year file: a crash between writes leaves the moved text in
-two files (Check J flags the duplicate loudly on the next run), never removed from one and not yet
-written to the other. Don't reorder those three lines.
+two files, never removed from one and not yet written to the other — and the next run finds that
+day already archived and finishes the move without adding it twice (the late-day merge below).
+Don't reorder those three lines.
 
 **The splice region is assembled, and cl-mid carries only new text.** `assembleRegion` re-opens the
 summary sentinel, re-emits legacy blocks and any unchanged `### DATE` / `### X to Y` entries the
@@ -184,13 +185,32 @@ run does it and warns that it was partial — gating there would only punish the
 
 **Summarization never destroys detail — the script moves it, verbatim.** Every full-detail `## DATE`
 block the splice removes is auto-archived byte-for-byte as a `### DATE` archive entry (Check J: no
-collision with an existing archive entry, every line conserved; a legacy heading's trailing text
+collision with this run's `--ar-content`, every line conserved; a legacy heading's trailing text
 survives as an italic note). Legacy `##` blocks with no ISO date (`## [Unreleased]`, `## [1.2.0]`)
 that the region swallows are re-emitted above the new content by the script itself (Check K: heading
 count and content lines conserved) — before this, a condense on a migrated Keep-a-Changelog file
 would have silently deleted the whole legacy history, since the model was never told those blocks
 were inside the region. `--ar-content` is transition-only now: `--plan` requests it solely for
 summary-section dates collapsing whose detail was never archived (pre-1.1 condense flows).
+
+**A late day merges into the day the archive already holds.** A fragment dated before the last
+condense (written one day, committed weeks later) folds into Tier 1 as a second block for a day that
+is already archived and summarized. Through v1.5.0 Check J refused it as a collision, and since
+nothing else may move Tier-1 detail, the block was stranded for good. Now `mergeIntoArchivedDay`
+merges it into the existing entry through the fold's own exported `mergeIntoExistingDay` — bullets
+join their `### Category` section, a missing category goes in canonical position, a block that isn't
+category-shaped is appended as-is — and any unit (bullet or paragraph) the entry already holds
+verbatim is skipped, which is also what makes the run after an interrupted write a clean finish
+instead of a duplicate. The summary follows: an existing `### DATE` keeps its lines and gains the
+new ones, and a range that already names the day extends that day's line instead of growing a
+second one. `planTiers` pulls those existing entries into the splice region (`rejoining`, and for
+the manual flow `coveringRanges`) — outside it, the rewrite would land beside the old heading
+(Check B). Check J still refuses a day this run's own `--ar-content` writes.
+
+**Anchors match where they begin a line.** `anchorIndexes` (indentation allowed) resolves every
+`--cl-start` / `--cl-end` / `--ar-before`, never a bare substring search: `## 2026-07-20` is a
+substring of `### 2026-07-20`, which is exactly the pair a late day produces, and Check A then called
+a unique anchor ambiguous.
 
 **A Tier-4 drop is checked day by day, not span by span.** A `--auto` week-range names the days it
 summarizes (`- YYYY-MM-DD — …`), so Check H requires *each* of those days to have its own archive
@@ -243,9 +263,12 @@ a fold; without it a fresh install reports itself as the most recent fold.
 
 **Payload scripts are dependency-free ESM on node builtins only** (Node 18+), and stay importable:
 `collect-changelog.mjs` exports its fold helpers (`extractFragmentBlocks`,
-`mergeFragmentsIntoChangelog`, `auditChangelog`, `lintFragmentBlocks`, `fragmentDateFromFilename`,
-`FragmentError`, `CATEGORY_ORDER`) plus the read-only census `--report` renders (`summarizeChangelog`,
-`summarizeArchive`), and guards the CLI as described above. `node:child_process` is imported for the
+`mergeFragmentsIntoChangelog`, `mergeIntoExistingDay`, `auditChangelog`, `lintFragmentBlocks`,
+`fragmentDateFromFilename`, `FragmentError`, `CATEGORY_ORDER`) plus the read-only census `--report`
+renders (`summarizeChangelog`, `summarizeArchive`), and guards the CLI as described above.
+`condense-changelog.mjs` imports `extractFragmentBlocks`, `FragmentError` and `mergeIntoExistingDay`
+from it — the one import between the two payload scripts, so a late day merges into the archive by
+the same rule the fold merges a Tier-1 day; the installer always ships them side by side. `node:child_process` is imported for the
 one `git` shell-out in `--report`; it is the only subprocess either payload script spawns, every
 failure of it degrades to a dropped section, and nothing else may come to depend on git being present.
 

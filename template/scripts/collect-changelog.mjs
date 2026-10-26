@@ -20,6 +20,8 @@
  * and left on disk rather than partly folded and deleted.
  *
  * Self-contained: no imports beyond node builtins, no build step, no deps.
+ * (condense-changelog.mjs imports the fold's parse/merge helpers from here, which
+ * is why the CLI below runs only when this file is invoked directly.)
  *
  * Usage:
  *   node scripts/collect-changelog.mjs             # fold + delete fragments
@@ -268,8 +270,13 @@ function categoryOf(line) {
  * inserted in canonical position among the sections already there. Appending
  * whole blocks instead used to leave a second `### Fixed` under the same day —
  * a duplicate heading, out of canonical order — whenever a fragment folded late.
+ *
+ * Exported because condense-changelog.mjs applies the same rule to an ARCHIVE
+ * entry when a late fragment's day was already condensed: one merge rule for
+ * both writers, so a day never reads differently depending on which tier it was
+ * in when its last fragment arrived.
  */
-function mergeIntoExistingDay(regionLines, cats) {
+export function mergeIntoExistingDay(regionLines, cats) {
   const out = [...regionLines]
   const isHeading = (l) => /^#{2,3}\s/.test(l)
 

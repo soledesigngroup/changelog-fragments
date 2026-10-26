@@ -1794,12 +1794,10 @@ group("condense verification checks", () => {
 
   test("J: an --ar-content entry colliding with an auto-archived day aborts", () => {
     const repo = midlifeRepo()
-    // Old-habit archive content for a day the run now archives verbatim itself.
-    write(
-      repo,
-      "docs/changelog-archive.md",
-      MIDLIFE_AR.replace("### 2026-06-07", "### 2026-07-20\n- **Old-habit copy** — summary.\n\n### 2026-06-07")
-    )
+    // Old-habit archive content, passed in THIS run, for a day the run now
+    // archives verbatim itself. (A day the archive held before the run is a late
+    // fragment's, and merges — see "condense merges a late fragment".)
+    write(repo, "ar-new.md", "### 2026-07-20\n- **Old-habit copy** — summary.\n\n---\n\n")
     write(
       repo,
       "cl-mid.md",
@@ -1811,10 +1809,13 @@ group("condense verification checks", () => {
         "--cl-start", "## 2026-07-20",
         "--cl-end", "### 2026-07-05",
         "--cl-mid", "cl-mid.md",
+        "--ar-before", "### 2026-06-07",
+        "--ar-content", "ar-new.md",
         "--keep-detailed-since", "2026-07-23",
       ]),
       "J"
     )
+    assert.equal(read(repo, "docs/changelog-archive.md"), MIDLIFE_AR, "nothing written")
   })
 
   test("K: a legacy block re-typed incompletely in cl-mid aborts", () => {
@@ -2346,6 +2347,136 @@ group("condense --auto", () => {
   })
 })
 
+group("condense merges a late fragment into its archived day", () => {
+  // A fragment written on 2026-09-22 and committed weeks later: an earlier condense
+  // had already archived 2026-09-22 and summarized it into a week-range. The fold
+  // places it in Tier 1 as a second block for that day; through v1.5.0 the next
+  // condense refused it (Check J) and no tool could ever move it out again.
+  const LATE_CL = [
+    "# Changelog", "", "---", "",
+    "## 2026-10-24", "", "### Added", "- **Fresh** — kept.", "", "---", "",
+    "## Earlier Changes (Summary)", "",
+    "### 2026-09-23", "- **Wednesday** — [`w.ts`](../src/w.ts)", "",
+    "### 2026-09-17 to 2026-09-22",
+    "- 2026-09-22 — **Welcome tour preview**; **Tour skipped slide two**",
+    "- 2026-09-21 — **Sales pipeline**", "",
+    "> Full per-day details available in [changelog-archive.md](changelog-archive.md)", "",
+  ].join("\n")
+  const LATE_AR = [
+    "# Changelog Archive", "",
+    "Full per-day detail for entries that have aged out of `docs/changelog.md`. Newest at top.", "",
+    "---", "",
+    "### 2026-09-23", "", "### Added", "- **Wednesday** — detail. [`w.ts`](../src/w.ts)", "", "---", "",
+    "### 2026-09-22", "",
+    "### Added", "- **Welcome tour preview** — detail. [`tour.tsx`](../src/tour.tsx)", "",
+    "### Fixed", "- **Tour skipped slide two** — detail.", "", "---", "",
+    "### 2026-09-21", "", "### Added", "- **Sales pipeline** — detail.", "", "---", "",
+  ].join("\n")
+  const LATE_FRAGMENT = [
+    "### Added",
+    "- **TypeSafe agent skill** — vendored. [`SKILL.md`](../.claude/skills/typesafe-ai/SKILL.md)",
+    "",
+    "### Changed",
+    "- **Skill catalog lists TypeSafe** — z. [`catalog.md`](../docs/catalog.md)",
+    "",
+  ].join("\n")
+  const lateRepo = () => {
+    const repo = newRepo({ "package.json": '{\n  "name": "late"\n}\n' })
+    install(repo)
+    write(repo, "docs/changelog.md", LATE_CL)
+    write(repo, "docs/changelog-archive.md", LATE_AR)
+    fragment(repo, "2026-09-22-typesafe-skill-56ad.md", LATE_FRAGMENT)
+    return repo
+  }
+
+  test("a fragment dated to an archived day folds, and the next condense merges it in", () => {
+    const repo = lateRepo()
+    fold(repo)
+    assert.deepEqual(dayDates(read(repo, "docs/changelog.md")), ["2026-10-24", "2026-09-22"])
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+
+    const plan = condense(repo, ["--plan", "--today", "2026-10-25"])
+    assert.equal(plan.status, 0, plan.out)
+    assert.match(plan.out, /2026-09-22 already in the archive/, plan.out)
+
+    const r = condense(repo, ["--auto", "--today", "2026-10-25"])
+    assert.equal(r.status, 0, r.out)
+    assert.match(r.out, /merged 1 late day\(s\) into the archive entry each already had: 2026-09-22 \(2 new\)/, r.out)
+
+    // Archive: still ONE entry for the day, the new bullets merged by category —
+    // Added gains a bullet, Changed is inserted in canonical order before Fixed.
+    const ar = read(repo, "docs/changelog-archive.md")
+    assert.equal(ar.match(/^### 2026-09-22$/gm).length, 1, ar)
+    assert.ok(
+      ar.includes(
+        [
+          "### 2026-09-22", "",
+          "### Added",
+          "- **Welcome tour preview** — detail. [`tour.tsx`](../src/tour.tsx)",
+          "- **TypeSafe agent skill** — vendored. [`SKILL.md`](../.claude/skills/typesafe-ai/SKILL.md)",
+          "",
+          "### Changed", "- **Skill catalog lists TypeSafe** — z. [`catalog.md`](../docs/catalog.md)", "",
+          "### Fixed", "- **Tour skipped slide two** — detail.", "", "---", "",
+          "### 2026-09-21",
+        ].join("\n")
+      ),
+      ar
+    )
+    assert.equal(ar.match(/^### Added$/gm).length, 3, "no second Added section under the day")
+
+    // Changelog: the late block left Tier 1, and the range's line for the day
+    // gained its subjects in place — one line per day, nothing repeated.
+    const cl = read(repo, "docs/changelog.md")
+    assert.deepEqual(dayDates(cl), ["2026-10-24"])
+    assert.match(cl, /^### 2026-09-17 to 2026-09-23$/m, cl)
+    assert.equal(cl.match(/^- 2026-09-22 — /gm).length, 1, cl)
+    assert.ok(
+      cl.includes(
+        "- 2026-09-22 — **Welcome tour preview**; **Tour skipped slide two**; " +
+          "**TypeSafe agent skill**; **Skill catalog lists TypeSafe**"
+      ),
+      cl
+    )
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+
+    // Settled: a second run has nothing left to move.
+    const again = condense(repo, ["--auto", "--today", "2026-10-25"])
+    assert.equal(again.status, 0, again.out)
+    assert.match(again.out, /Nothing has aged out/, again.out)
+  })
+
+  test("a late day still in Tier 2 rewrites its summary entry instead of duplicating it", () => {
+    // The archive entry here is legacy-shaped (no `### Category`), so the new
+    // section lands after its last line; the Tier-2 entry keeps its line verbatim.
+    const repo = midlifeRepo()
+    write(
+      repo,
+      "docs/changelog.md",
+      MIDLIFE_CL.replace("### 2026-07-14", "### 2026-07-20\n- **Earlier take** — [`a.ts`](../src/a.ts)\n\n### 2026-07-14")
+    )
+    write(
+      repo,
+      "docs/changelog-archive.md",
+      MIDLIFE_AR.replace("### 2026-06-07", "### 2026-07-20\n- **Earlier take** — archived detail.\n\n### 2026-06-07")
+    )
+    const r = condense(repo, ["--auto", "--today", "2026-07-26"])
+    assert.equal(r.status, 0, r.out)
+
+    const cl = read(repo, "docs/changelog.md")
+    assert.equal(cl.match(/^### 2026-07-20$/gm).length, 1, cl)
+    assert.ok(cl.includes("### 2026-07-20\n- **Earlier take** — [`a.ts`](../src/a.ts)\n- **Six days ago**\n"), cl)
+    assert.ok(cl.includes("### 2026-07-18\n- **Eight days ago**"), "an ordinary day beside it is unaffected")
+
+    const ar = read(repo, "docs/changelog-archive.md")
+    assert.equal(ar.match(/^### 2026-07-20$/gm).length, 1, ar)
+    assert.ok(
+      ar.includes("### 2026-07-20\n- **Earlier take** — archived detail.\n\n### Changed\n- **Six days ago** — z.\n\n### 2026-07-18"),
+      ar
+    )
+    assert.equal(foldAttempt(repo, ["--check"]).status, 0)
+  })
+})
+
 group("condense serializes with the fold", () => {
   // A writing condense is a read-modify-write of the same file the fold writes,
   // so it holds the fold's lock for that whole span. --plan and --dry-run stay
@@ -2422,13 +2553,14 @@ group("condense serializes with the fold", () => {
       const repo = agedRepo()
       mkdirSync(join(repo, "elsewhere"))
       write(repo, "elsewhere/archive.md", read(repo, "docs/changelog-archive.md"))
+      const args = [
+        "--auto", "--today", "2026-07-26",
+        "--changelog", "docs/changelog.md",
+        "--archive", "elsewhere/archive.md",
+      ]
       chmodSync(join(repo, "docs"), 0o555)
       try {
-        const r = condense(repo, [
-          "--auto", "--today", "2026-07-26",
-          "--changelog", "docs/changelog.md",
-          "--archive", "elsewhere/archive.md",
-        ])
+        const r = condense(repo, args)
         assert.notEqual(r.status, 0, "the changelog write must fail")
         assert.ok(read(repo, "elsewhere/archive.md").includes("**Aged out**"), "archive written first")
         assert.match(read(repo, "docs/changelog.md"), /^## 2026-07-18$/m, "changelog untouched — nothing lost")
@@ -2436,6 +2568,15 @@ group("condense serializes with the fold", () => {
         chmodSync(join(repo, "docs"), 0o755)
       }
       assert.ok(!existsSync(join(repo, "docs/changelog.d/.fold.lock")), "lock released on the way down")
+
+      // The next run finds the day already archived and finishes the move —
+      // the block leaves the changelog, and the archive does not gain it twice.
+      const archived = read(repo, "elsewhere/archive.md")
+      const rerun = condense(repo, args)
+      assert.equal(rerun.status, 0, rerun.out)
+      assert.match(rerun.out, /2026-07-18 \(0 new, 1 already archived\)/, rerun.out)
+      assert.equal(read(repo, "elsewhere/archive.md"), archived, "archive unchanged by the rerun")
+      assert.doesNotMatch(read(repo, "docs/changelog.md"), /^## 2026-07-18$/m)
     })
   }
 })

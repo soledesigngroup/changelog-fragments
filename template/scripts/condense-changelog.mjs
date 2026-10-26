@@ -32,7 +32,11 @@
  *      first (Check N). The model never re-types detail, the archive genuinely
  *      holds the full text of every entry that has aged out of Tier 1, and
  *      grepping the docs/ tree finds history verbatim instead of a paraphrase.
- *      Verified — Check J.
+ *      A block for a day the archive ALREADY holds — a late fragment, folded
+ *      after an earlier run condensed its day — merges into that entry instead,
+ *      bullet by bullet under its `### Category` sections (the fold's own
+ *      same-day rule), adding nothing the entry already has; its summary entry
+ *      or week-range line gains the new subjects the same way. Verified — Check J.
  *   3. (Legacy block re-emit) A `##` heading with no ISO date (`## [1.2.0]`,
  *      `## [Unreleased]`) that the splice region swallows is re-emitted above the
  *      new content by the script itself, so a migrated Keep-a-Changelog history
@@ -72,8 +76,9 @@
  * can't land between this run's read and its write and be silently overwritten.
  * --plan and --dry-run write nothing and stay lock-free. Writes go through a
  * temp file + rename, receiving file first (year file, then archive, then
- * changelog): a crash between writes leaves detail duplicated across two files
- * — loud on the next run — never removed from one and not yet in the other.
+ * changelog): a crash between writes leaves detail duplicated across two files,
+ * never removed from one and not yet in the other — and the next run, finding
+ * that day's detail already archived, finishes the move without adding it twice.
  *
  * Other flags:
  *   --dry-run   run every check and print the same report, then stop without writing
@@ -144,9 +149,10 @@
  *   I. (if --shed-year) the year being shed is the oldest present and not the only
  *      one, its target file doesn't already exist, and the partition conserves
  *      every archive heading and every non-blank line exactly once.
- *   J. A full-detail day leaving the changelog must not already have an archive
- *      entry (the script archives it verbatim itself — a copy in --ar-content
- *      would duplicate it), and the auto-archive must conserve every line.
+ *   J. A full-detail day leaving the changelog must not also be written by this
+ *      run's --ar-content (the script archives it verbatim itself — that copy
+ *      would duplicate it), and the auto-archive must conserve every line. A day
+ *      the archive already held before the run is merged into, not refused.
  *   K. Legacy `##` blocks with no ISO date survive any splice: same heading
  *      count as before, and every content line still present.
  *   L. A splice refuses to run while fragments are pending in docs/changelog.d —
@@ -159,8 +165,9 @@
  *      rather than re-sorted (re-sorting a file this system didn't scramble is
  *      editing history).
  *
- * Self-contained: no imports beyond node builtins, no build step, no deps.
- * Dates are compared as ISO strings (YYYY-MM-DD sorts lexicographically), so
+ * Self-contained: no imports beyond node builtins and its sibling
+ * collect-changelog.mjs (installed beside it, for the fold's same-day merge), no
+ * build step, no deps. Dates are compared as ISO strings (YYYY-MM-DD sorts lexicographically), so
  * there is no timezone handling to get wrong. `shiftDays` is the one exception —
  * see the note on it.
  *
@@ -170,6 +177,10 @@
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+
+// The fold's own parser and same-day merge, so a late fragment's bullets land in
+// an archived day by exactly the rule that merges them into a Tier-1 day.
+import { extractFragmentBlocks, FragmentError, mergeIntoExistingDay } from "./collect-changelog.mjs"
 
 const SELF = fileURLToPath(import.meta.url)
 const ROOT = resolve(dirname(SELF), "..")
@@ -274,16 +285,26 @@ function headingKeys(text) {
   return [...text.matchAll(reAnyHeading())].map((m) => (m[2] ? `${m[1]} to ${m[2]}` : m[1]))
 }
 
-function countOccurrences(text, sub) {
-  if (!sub) return 0
-  let n = 0
-  let i = text.indexOf(sub)
-  while (i !== -1) {
-    n++
-    i = text.indexOf(sub, i + sub.length)
+/**
+ * Where `anchor` begins a line of `text` (after optional indentation), in order.
+ *
+ * Anchors are heading lines, or a prefix of one. A bare substring search found
+ * `## 2026-07-20` inside `### 2026-07-20` — precisely the pair a late fragment
+ * produces (a Tier-1 block and a summary entry for the same day) — so Check A
+ * called a perfectly good anchor ambiguous and the run could never proceed.
+ */
+function anchorIndexes(text, anchor) {
+  const out = []
+  if (!anchor) return out
+  for (let i = text.indexOf(anchor); i !== -1; i = text.indexOf(anchor, i + 1)) {
+    let k = i
+    while (k > 0 && (text[k - 1] === " " || text[k - 1] === "\t")) k--
+    if (k === 0 || text[k - 1] === "\n") out.push(i)
   }
-  return n
+  return out
 }
+const countAnchor = (text, anchor) => anchorIndexes(text, anchor).length
+const anchorIndex = (text, anchor) => anchorIndexes(text, anchor)[0] ?? -1
 
 const stripTrailingJunk = (lines) => {
   while (lines.length && (lines[lines.length - 1].trim() === "" || /^-{3,}\s*$/.test(lines[lines.length - 1])))
@@ -573,6 +594,124 @@ function insertIntoArchive(arText, entries) {
   return out
 }
 
+/** A date heading of any shape the archive can hold — the boundary between entries. */
+const isDateHeadingLine = (line) =>
+  /^### \d{4}-\d{2}-\d{2}(?: to \d{4}-\d{2}-\d{2})?[ \t]*$/.test(line) || matchH2Day(line) !== null
+
+/**
+ * The units a block contributes, as [start, end) line ranges: each bullet (a
+ * column-0 `- ` line plus its continuation lines) or loose paragraph.
+ */
+function unitsOf(lines) {
+  const units = []
+  let start = -1
+  for (let i = 0; i <= lines.length; i++) {
+    const l = lines[i]
+    if (start !== -1 && (i === lines.length || l.trim() === "" || /^- /.test(l))) {
+      units.push([start, i])
+      start = -1
+    }
+    if (i < lines.length && l.trim() !== "" && start === -1) start = i
+  }
+  return units
+}
+
+/**
+ * `lines` minus every unit the archive entry already holds verbatim, line for
+ * line — so a block whose detail is partly or wholly archived (an interrupted
+ * run, or a late fragment folded beside an already-moved block) adds only what
+ * is new. Returns [kept lines, units added, units already there].
+ */
+function withoutArchivedUnits(lines, entryText) {
+  const haystack = `\n${entryText}\n`
+  const drop = new Set()
+  let added = 0
+  let present = 0
+  for (const [a, b] of unitsOf(lines)) {
+    if (haystack.includes(`\n${lines.slice(a, b).join("\n")}\n`)) {
+      present++
+      for (let i = a; i < b; i++) drop.add(i)
+    } else added++
+  }
+  const kept = lines.filter((l, i) => !drop.has(i))
+  // Dropping a unit can leave two blank lines meeting; one is enough.
+  const tidy = kept.filter((l, i) => !(l.trim() === "" && i > 0 && kept[i - 1].trim() === ""))
+  return [stripTrailingJunk(tidy), added, present]
+}
+
+/**
+ * Merge a full-detail block into the archive entry its day ALREADY has.
+ *
+ * That is the shape a late fragment leaves: written on one day, folded after an
+ * earlier condense had already archived that day, so it sits in Tier 1 as a
+ * second block for a day the archive holds. Inserting a second `### DATE` for it
+ * would duplicate the heading (Check B); refusing — what Check J did through
+ * v1.5.0 — stranded the block in Tier 1 with no tool able to move it.
+ *
+ * A block in canonical `### Category` shape merges bullet by bullet through the
+ * fold's own `mergeIntoExistingDay`: an existing section gains the new bullets,
+ * a missing one is inserted in canonical position. Anything else (a legacy
+ * heading's block, prose outside a category) is appended below the entry's last
+ * line as-is, its trailing heading text kept as an italic note, the same way a
+ * fresh entry keeps it. Either way a unit the entry already holds verbatim is
+ * not added twice, which is also what lets the run after an interrupted write
+ * finish the move instead of duplicating it.
+ *
+ * Returns { text, added, present } — units added, and units already archived.
+ */
+function mergeIntoArchivedDay(arText, block) {
+  const lines = arText.split("\n")
+  const h = lines.findIndex(
+    (l) => l.match(/^### (\d{4}-\d{2}-\d{2})[ \t]*$/)?.[1] === block.date || matchH2Day(l)?.[1] === block.date
+  )
+  let end = lines.findIndex((l, i) => i > h && isDateHeadingLine(l))
+  if (end === -1) {
+    // The last entry: the archive's trailing notes (the "Earlier years" pointer,
+    // the seeded placeholder) describe the file, not this day — stay above them.
+    end = lines.length
+    while (end > h + 1 && (lines[end - 1].trim() === "" || /^[ \t]*[_>]/.test(lines[end - 1]))) end--
+  }
+  const entry = lines.slice(h + 1, end)
+  const entryText = entry.join("\n")
+
+  let cats = null
+  if (!block.trailing) {
+    try {
+      cats = extractFragmentBlocks(block.body.join("\n"))
+    } catch (err) {
+      if (!(err instanceof FragmentError)) throw err
+    }
+  }
+
+  let merged
+  let added = 0
+  let present = 0
+  if (cats) {
+    const byCategory = new Map()
+    for (const { category, rawLines } of cats) {
+      const [fresh, a, p] = withoutArchivedUnits(rawLines, entryText)
+      added += a
+      present += p
+      if (fresh.length) byCategory.set(category, (byCategory.get(category) ?? []).concat(fresh))
+    }
+    merged = mergeIntoExistingDay(entry, byCategory)
+  } else {
+    const body = (block.trailing ? [`_${block.trailing}_`, ""] : []).concat(block.body)
+    const [fresh, a, p] = withoutArchivedUnits(body, entryText)
+    added = a
+    present = p
+    merged = [...entry]
+    if (fresh.length) {
+      let last = -1
+      merged.forEach((l, i) => {
+        if (l.trim() !== "" && !/^-{3,}\s*$/.test(l)) last = i
+      })
+      merged.splice(last + 1, 0, "", ...fresh)
+    }
+  }
+  return { text: [...lines.slice(0, h + 1), ...merged, ...lines.slice(end)].join("\n"), added, present }
+}
+
 /**
  * Append `text` below the archive's last entry but above any trailing note lines.
  * Only a trailing run of blanks and note lines (`_italic_`, `> pointer`) is
@@ -679,7 +818,7 @@ const uniqSorted = (xs) => [...new Set(xs)].sort()
 const shq = (s) => `'${s.split("'").join(`'\\''`)}'`
 
 /**
- * Anchors are matched as plain substrings, so a prefix will do — and a shorter one
+ * Anchors are matched where they begin a line, so a prefix will do — and a shorter one
  * is better when the full line carries backticks or quotes (the seeded archive
  * placeholder does). Only shorten while the prefix still resolves uniquely.
  */
@@ -687,7 +826,7 @@ function shortestUniqueAnchor(line, haystack) {
   const cut = line.search(/[`'"]/)
   if (cut < 8) return line
   const prefix = line.slice(0, cut).trimEnd()
-  return countOccurrences(haystack, prefix) === 1 ? prefix : line
+  return countAnchor(haystack, prefix) === 1 ? prefix : line
 }
 
 /** The summary section (everything from the sentinel down), or "" if absent. */
@@ -744,6 +883,22 @@ function planTiers(clText, arText, today, { autoRanges = false } = {}) {
     [...collapsing, ...beyondTier3].filter((d) => !condensingSet.has(d) && !arSingles.has(d))
   ).reverse()
 
+  // A LATE day: a fragment folded after an earlier run had already condensed its
+  // day, so a full-detail block is leaving Tier 1 for a day the archive (and
+  // usually the summary zone) already holds. The run merges the block into that
+  // archive entry. Its summary has to change too — a Tier-2 `### DATE` gains the
+  // new subjects, and (manual flow) a range already covering the day is
+  // rewritten rather than overlapped — so those headings join the splice region;
+  // left outside it, the new entry would sit beside the old one (Check B).
+  const lateArchived = uniqSorted(condensing.filter((d) => arSingles.has(d))).reverse()
+  const summaryDaySet = new Set(summaryDays)
+  const rejoining = toTier2.filter((d) => summaryDaySet.has(d))
+  const coveringRanges = autoRanges
+    ? [] // --auto reaches these through mergeRangeKeys, extending the day's line in place
+    : summaryRanges
+        .filter(([a, b]) => condensing.some((d) => a <= d && d <= b))
+        .map(([a, b]) => `${a} to ${b}`)
+
   // --auto merges a partial week's new days into an existing range in the same
   // absolute week bucket (rather than laying a second range beside it), which
   // requires that range to sit INSIDE the splice region — so it counts as
@@ -763,7 +918,13 @@ function planTiers(clText, arText, today, { autoRanges = false } = {}) {
   // Dates that stay put can sit inside that span — an existing Tier-2 entry is
   // newer than the ones now aging into a week-range — so the region can enclose
   // headings the run re-emits verbatim itself.
-  const changedSummaryKeys = new Set([...collapsing, ...beyondTier3, ...mergeRangeKeys])
+  const changedSummaryKeys = new Set([
+    ...collapsing,
+    ...beyondTier3,
+    ...mergeRangeKeys,
+    ...rejoining,
+    ...coveringRanges,
+  ])
   const summaryHeadings = [...summary.matchAll(reAnyHeading())].map((m) => ({
     text: m[0].trim(),
     key: m[2] ? `${m[1]} to ${m[2]}` : m[1],
@@ -790,8 +951,8 @@ function planTiers(clText, arText, today, { autoRanges = false } = {}) {
   // Legacy no-date blocks the region swallows — the run re-emits them itself.
   let legacyInRegion = []
   if (clStart !== null) {
-    const i = clText.indexOf(clStart)
-    const j = clText.indexOf(clEnd)
+    const i = anchorIndex(clText, clStart)
+    const j = anchorIndex(clText, clEnd)
     if (i !== -1 && j > i) legacyInRegion = legacyBlocksIn(clText.slice(i, j)).map((b) => b.heading)
   }
 
@@ -839,6 +1000,9 @@ function planTiers(clText, arText, today, { autoRanges = false } = {}) {
     needArContent,
     legacyInRegion,
     mergeRangeKeys,
+    lateArchived,
+    rejoining,
+    coveringRanges,
     stuck,
     legacyOpaque,
     arBefore,
@@ -975,6 +1139,21 @@ function formatPlan(p, args) {
         `The run moves the full-detail blocks for ${list(p.autoArchive)} into the archive ` +
           `verbatim itself — do not re-type them in cl-mid or ar-new.md.`
       )
+    if (p.lateArchived.length)
+      out.push(
+        `${list(p.lateArchived)} already in the archive (a fragment folded after an earlier ` +
+          `condense): the run merges the new bullets into that entry — it gets no second one.`
+      )
+    if (p.rejoining.length)
+      out.push(
+        `${list(p.rejoining)} already summarized: your '### DATE' replaces that entry, so carry its ` +
+          `lines over alongside the new subjects.`
+      )
+    if (p.coveringRanges.length)
+      out.push(
+        `Range(s) ${list(p.coveringRanges)} already cover a late day: write that week's range to ` +
+          `replace it, carrying its lines over, rather than a per-day entry beside it (Check E).`
+      )
     if (p.legacyInRegion.length)
       out.push(
         `Legacy block(s) inside the region (${p.legacyInRegion.join(", ")}) are re-emitted by ` +
@@ -1070,11 +1249,24 @@ function buildAutoMid(clText, plan) {
     dayBlocksIn(clText)
       .filter((b) => b.date === date)
       .flatMap((b) => (b.trailing ? [`_${b.trailing}_`] : []).concat(b.body))
-  const sourceBody = (date) => summaryDayBody(date) ?? fullDetailBody(date)
+  // A late day has BOTH sources: the summary an earlier run wrote, and the
+  // full-detail block a fragment folded after that run. Its entry is fed by both,
+  // the existing summary first and nothing said twice — reading only the summary
+  // (what this did through v1.5.0) left the late fragment's subjects out.
+  const sourceItems = (date) => [
+    ...new Set(
+      [...bulletsOf(summaryDayBody(date) ?? []), ...bulletsOf(fullDetailBody(date))].map(tier3Item)
+    ),
+  ]
 
   const parts = []
   for (const date of plan.toTier2) {
-    const lines = bulletsOf(fullDetailBody(date)).map(tier2Line)
+    // An existing Tier-2 entry keeps its lines verbatim; the new ones follow.
+    const existing = summaryDayBody(date) ?? []
+    const fresh = bulletsOf(fullDetailBody(date))
+      .map(tier2Line)
+      .filter((l) => !existing.includes(l))
+    const lines = [...existing, ...fresh]
     if (lines.length) parts.push(`### ${date}\n${lines.join("\n")}`)
   }
 
@@ -1112,14 +1304,22 @@ function buildAutoMid(clText, plan) {
     // keep the range shape, or the old heading would survive beside the new day
     // and Check E would refuse the run for covering one with the other.
     if (!extending && from === to) {
-      const items = bulletsOf(sourceBody(from)).map((b) => `- ${tier3Item(b)}`)
+      const items = sourceItems(from).map((item) => `- ${item}`)
       parts.push(items.length ? `### ${from}\n${items.join("\n")}` : `### ${from}`)
       continue
     }
 
     for (const d of [...days].reverse()) {
-      const items = bulletsOf(sourceBody(d)).map(tier3Item)
-      body.push(`- ${d} — ${items.join("; ")}`)
+      const items = sourceItems(d)
+      // The range already names a late day: that line gains the new items in
+      // place, instead of a second `- DATE —` line for the same day below it.
+      const at = body.findIndex((l) => l.startsWith(`- ${d} — `))
+      if (at === -1) {
+        body.push(`- ${d} — ${items.join("; ")}`)
+        continue
+      }
+      const missing = items.filter((item) => !body[at].includes(item))
+      if (missing.length) body[at] = `${body[at]}; ${missing.join("; ")}`
     }
     parts.push(`### ${from} to ${to}\n${body.join("\n")}`)
   }
@@ -1598,17 +1798,17 @@ function main() {
   let removedDayBlocks = []
   if (haveSplice) {
     const mid = autoMidText ?? readFileSync(args.clMid, "utf8")
-    const nStart = countOccurrences(oldCl, args.clStart)
-    const nEnd = countOccurrences(oldCl, args.clEnd)
+    const nStart = countAnchor(oldCl, args.clStart)
+    const nEnd = countAnchor(oldCl, args.clEnd)
     if (nStart !== 1)
       fails.push(`A: --cl-start '${args.clStart}' occurs ${nStart}x in changelog (need 1)`)
     if (nEnd !== 1) fails.push(`A: --cl-end '${args.clEnd}' occurs ${nEnd}x in changelog (need 1)`)
-    if (!fails.length && oldCl.indexOf(args.clStart) >= oldCl.indexOf(args.clEnd))
+    if (!fails.length && anchorIndex(oldCl, args.clStart) >= anchorIndex(oldCl, args.clEnd))
       fails.push("A: --cl-start does not precede --cl-end")
     if (fails.length) return abort(fails)
 
-    const i = oldCl.indexOf(args.clStart)
-    const j = oldCl.indexOf(args.clEnd)
+    const i = anchorIndex(oldCl, args.clStart)
+    const j = anchorIndex(oldCl, args.clEnd)
     const region = oldCl.slice(i, j)
     // cl-mid carries only the NEW summary text; the assembler re-opens the
     // sentinel, re-emits unchanged and legacy blocks from the old region, and
@@ -1632,14 +1832,15 @@ function main() {
 
   const oldAr = readArchive()
   let newAr = oldAr
+  let arContent = ""
   if (doArchive) {
-    const arContent = readFileSync(args.arContent, "utf8")
-    const nBefore = countOccurrences(oldAr, args.arBefore)
+    arContent = readFileSync(args.arContent, "utf8")
+    const nBefore = countAnchor(oldAr, args.arBefore)
     if (nBefore !== 1) {
       fails.push(`A: --ar-before '${args.arBefore}' occurs ${nBefore}x in archive (need 1)`)
       return abort(fails)
     }
-    const k = oldAr.indexOf(args.arBefore)
+    const k = anchorIndex(oldAr, args.arBefore)
     newAr = oldAr.slice(0, k) + arContent + oldAr.slice(k)
   }
 
@@ -1648,27 +1849,44 @@ function main() {
   // the detail moves there byte-for-byte the moment it leaves Tier 1. The model
   // never re-types it and never summarizes it away.
   let autoArchived = []
+  const mergedLate = []
   const archiveExtras = autoArchiveExtras ?? new Map()
   if (removedDayBlocks.length || archiveExtras.size) {
-    const already = singleDates(newAr)
+    // A day this run's --ar-content also writes is a collision: the run archives
+    // removed days itself, so that copy would be a second entry for the day. A day
+    // the archive held BEFORE this run is a late fragment (or the run after an
+    // interrupted write) — merged below, not refused.
+    const fromArContent = singleDates(arContent)
     for (const date of uniqSorted(removedDayBlocks.map((b) => b.date))) {
-      if (already.has(date))
+      if (fromArContent.has(date))
         fails.push(
-          `J: full-detail day '${date}' leaving the changelog already has an archive entry - ` +
+          `J: full-detail day '${date}' leaving the changelog also has an --ar-content entry - ` +
             `the run archives removed days verbatim itself; remove '### ${date}' from --ar-content`
         )
     }
+    const already = singleDates(newAr)
     for (const date of [...archiveExtras.keys()].sort()) {
       if (already.has(date))
         fails.push(`J: '${date}' already has an archive entry - refusing to add a second one`)
     }
     if (fails.length) return abort(fails)
 
+    const preArchived = singleDates(oldAr)
+    for (const b of removedDayBlocks.filter((x) => preArchived.has(x.date))) {
+      const r = mergeIntoArchivedDay(newAr, b)
+      newAr = r.text
+      const prev = mergedLate.find((m) => m.date === b.date)
+      if (prev) {
+        prev.added += r.added
+        prev.present += r.present
+      } else mergedLate.push({ date: b.date, added: r.added, present: r.present })
+    }
+
     // Same-date blocks (legacy duplicates) merge under one canonical heading; a
     // legacy heading's trailing text is kept as an italic note line above its
     // block, so nothing greppable is lost when the heading canonicalizes.
     const byDate = new Map()
-    for (const b of removedDayBlocks) {
+    for (const b of removedDayBlocks.filter((x) => !preArchived.has(x.date))) {
       if (!byDate.has(b.date)) byDate.set(b.date, [])
       if (b.trailing) byDate.get(b.date).push(`_${b.trailing}_`)
       byDate.get(b.date).push(b.body.join("\n"))
@@ -1824,10 +2042,21 @@ function main() {
   const lineCount = (s) => s.split("\n").length
   console.log("All checks passed.")
   console.log(`  changelog: ${lineCount(oldCl)} -> ${lineCount(newCl)} lines`)
-  if (doArchive || autoArchived.length)
+  if (doArchive || autoArchived.length || mergedLate.length)
     console.log(`  archive:   ${lineCount(oldAr)} -> ${lineCount(newAr)} lines`)
   if (autoArchived.length)
     console.log(`  archived ${autoArchived.length} full-detail day(s) verbatim: ${autoArchived.join(", ")}`)
+  if (mergedLate.length)
+    console.log(
+      `  merged ${mergedLate.length} late day(s) into the archive entry each already had: ` +
+        mergedLate
+          .sort((a, b) => (a.date < b.date ? 1 : -1))
+          .map(
+            (m) =>
+              `${m.date} (${m.added} new` + (m.present ? `, ${m.present} already archived` : "") + ")"
+          )
+          .join(", ")
+    )
   if (archiveExtras.size)
     console.log(
       `  (of those, ${archiveExtras.size} pre-1.1 day(s) had only a summary left to move: ` +
@@ -1862,10 +2091,11 @@ function main() {
   }
 
   // Detail flows changelog -> archive -> year file, so the receiving file lands
-  // first: a crash between writes leaves the moved text in two files (loud on
-  // the next run, via Check J), never removed from one and not yet in the other.
+  // first: a crash between writes leaves the moved text in two files, never
+  // removed from one and not yet in the other. The next run finds that day's
+  // detail already archived and finishes the move without adding it twice.
   if (shed) writeAtomic(shed.yearPath, shed.yearText)
-  if (doArchive || shed || autoArchived.length) writeAtomic(args.archive, newAr)
+  if (doArchive || shed || autoArchived.length || mergedLate.length) writeAtomic(args.archive, newAr)
   writeAtomic(args.changelog, newCl)
   console.log("Written.")
   return 0

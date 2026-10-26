@@ -12,7 +12,41 @@ that's the only question a downstream repo actually has. Versions are semver, re
 | **minor** | New capability. Existing installs keep working untouched. | None — re-run to get it. |
 | **major** | A shared structural anchor, the category vocabulary, or the fragment filename convention changed. | **Required** — an existing `changelog.md` may stop passing `--check`, or old fragments may stop folding. |
 
-Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.5.0`.
+Pin a version with `npx degit soledesigngroup/changelog-fragments#v1.6.0`.
+
+---
+
+## [1.6.0] — 2026-10-25
+
+**Upgrade: recommended — re-run `install.mjs`. Safe on an existing installation**; no shared anchor,
+category, or filename convention changed. One behavior change: a condense that Check J used to refuse
+— a full-detail day leaving Tier 1 whose day the archive already holds — now succeeds by merging.
+Check J still refuses a day this run's own `--ar-content` writes.
+
+### Added
+
+- **A late fragment merges into the day it belongs to.** A fragment written on 2026-09-22 and
+  committed on 2026-10-14 (after a condense had archived 09-22) folded fine, then stopped every later
+  condense: Check J called the block a collision with the existing archive entry, and nothing else may
+  move Tier-1 detail, so it was stranded. The block now merges into that entry by the fold's own
+  same-day rule (bullets join their `### Category` section, a missing category goes in canonical
+  position), and its summary follows — an existing `### DATE` gains the new lines, and a week-range
+  that already names the day extends that day's line instead of adding a second. `--plan` names late
+  days and says what the manual flow must carry over.
+
+### Fixed
+
+- **The run after an interrupted write finishes the move.** A crash between the archive write and the
+  changelog write leaves the day's detail in both files; the next run used to abort on Check J. It now
+  recognizes the archived units, adds nothing twice, and lets the block leave the changelog.
+- **Anchors match where they begin a line.** Check A counted `--cl-start '## 2026-07-20'` twice when
+  the summary held `### 2026-07-20` — a substring of it, and exactly the pair a late day produces.
+
+### Changed
+
+- **`condense-changelog.mjs` imports from `collect-changelog.mjs`** (`extractFragmentBlocks`,
+  `FragmentError`, `mergeIntoExistingDay`, the last newly exported). The installer always ships the two
+  side by side; a copied-alone condense script now needs its sibling.
 
 ---
 
